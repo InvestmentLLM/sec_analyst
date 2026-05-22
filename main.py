@@ -1,0 +1,214 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sec_fetcher import SECFetcher
+from llm_layer import SECAnalyzer
+from dotenv import load_dotenv
+import cache as disk_cache
+
+load_dotenv()
+
+app = FastAPI(title="SEC Analyzer API", version="3.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+_text_cache: dict = {}
+_comprehensive_cache: dict = {}   # ticker → {fin_str, sections_str, computed_str, company}
+
+
+def _get_text(fetcher, url):
+    cache_key = f"text_{url}"
+    hit = disk_cache.get(cache_key, disk_cache.TTL_TEXT)
+    if hit is not None:
+        return hit
+    text = fetcher.get_filing_text(url)
+    disk_cache.put(cache_key, text)
+    _text_cache[url] = text
+    return text
+
+
+class AnalyzeReq(BaseModel):
+    ticker: str
+    document_url: str
+    form_type: str
+
+
+class QueryReq(BaseModel):
+    ticker: str
+    document_url: str
+    form_type: str
+    question: str
+
+
+class AskReq(BaseModel):
+    ticker: str
+    question: str
+
+
+@app.get("/")
+def root():
+    return {"status": "running", "version": "3.1.0"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/filings/{ticker}")
+def get_filings(ticker: str, count: int = 5):
+    try:
+        fetcher = SECFetcher(ticker.upper())
+        filings = fetcher.get_recent_filings(count=count)
+        if not filings:
+            raise HTTPException(404, f"No filings found for {ticker.upper()}")
+        return {"ticker": ticker.upper(), "filings": filings}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/comprehensive/{ticker}")
+def get_comprehensive(ticker: str, refresh: bool = False):
+    """
+    Fetch all key SEC filings + XBRL data, pre-compute exact metrics,
+    then run LLM analysis with a 0-100 buy/sell rating.
+
+    Pass ?refresh=true to bypass cache and re-fetch live data.
+    Results are cached to disk for 24 hours.
+
+    Requires: Bearer token in Authorization header.
+    Rate limited: 3 analyses/month for free users, unlimited for paid.
+    """
+    t = ticker.upper()
+    cache_key = f"{t}_comprehensive"
+
+    # Check rate limit (unless cache hit)
+    if not refresh:
+        cached = disk_cache.get(cache_key, disk_cache.TTL_ANALYSIS)
+        if cached is not None:
+            # Cache hit — no usage counted
+            _comprehensive_cache[t] = cached.get("_ask_cache", {})
+            cached.pop("_ask_cache", None)
+            return cached
+
+    try:
+        fetcher  = SECFetcher(t)
+        analyzer = SECAnalyzer()
+
+        data     = fetcher.get_comprehensive_data()
+        analysis = analyzer.analyze_comprehensive(data, t)
+
+        facts    = data.get("financial_facts", {})
+        sections = data.get("filing_sections", {})
+        computed = analysis.pop("_computed", {})
+
+        fin_str      = analyzer._fmt_facts(facts)
+        computed_str = analyzer._metrics_str(computed)
+        sections_str = "\n\n".join(
+            f"=== {k.upper()} ===\n{v[:4000]}"
+            for k, v in list(sections.items())[:3]
+        )
+
+        ask_cache = {
+            "fin_str":      fin_str,
+            "sections_str": sections_str,
+            "computed_str": computed_str,
+            "company":      analysis.get("company_name", t),
+        }
+        _comprehensive_cache[t] = ask_cache
+
+        # Build verified_metrics from Python computation — never from LLM
+        analysis["verified_metrics"] = analyzer.display_metrics(computed)
+        analysis["financial_data"]   = facts
+        analysis["company_info"]     = data.get("company_info", {})
+
+        result = {"ticker": t, **analysis}
+        disk_cache.put(cache_key, {**result, "_ask_cache": ask_cache})
+        return result
+
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/ask")
+def ask(req: AskReq):
+    """Ask a question grounded in the cached comprehensive data."""
+    t = req.ticker.upper()
+    try:
+        analyzer = SECAnalyzer()
+        cached   = _comprehensive_cache.get(t)
+
+        # Fall back to disk cache if the process restarted since last analysis
+        if not cached:
+            disk_hit = disk_cache.get(f"{t}_comprehensive", disk_cache.TTL_ANALYSIS)
+            if disk_hit:
+                cached = disk_hit.get("_ask_cache")
+                if cached:
+                    _comprehensive_cache[t] = cached
+
+        if cached:
+            fin_str      = cached["fin_str"]
+            sections_str = cached["sections_str"]
+            computed_str = cached["computed_str"]
+            company      = cached["company"]
+        else:
+            fetcher      = SECFetcher(t)
+            data         = fetcher.get_comprehensive_data()
+            facts        = data.get("financial_facts", {})
+            sections     = data.get("filing_sections", {})
+            computed     = analyzer._compute_metrics(facts)
+            fin_str      = analyzer._fmt_facts(facts)
+            computed_str = analyzer._metrics_str(computed)
+            sections_str = "\n\n".join(
+                f"=== {k.upper()} ===\n{v[:4000]}"
+                for k, v in list(sections.items())[:3]
+            )
+            company = data.get("company_info", {}).get("name", t)
+
+        answer = analyzer.query_comprehensive(
+            fin_str, sections_str, computed_str, t, company, req.question
+        )
+        return {"ticker": t, "question": req.question, "answer": answer}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/cache/{ticker}")
+def clear_cache(ticker: str):
+    """Force-expire all cached data for a ticker (use before a manual refresh)."""
+    removed = disk_cache.evict_ticker(ticker.upper())
+    _comprehensive_cache.pop(ticker.upper(), None)
+    return {"ticker": ticker.upper(), "evicted": removed}
+
+
+@app.post("/analyze")
+def analyze(req: AnalyzeReq):
+    try:
+        fetcher  = SECFetcher(req.ticker.upper())
+        analyzer = SECAnalyzer()
+        text     = _get_text(fetcher, req.document_url)
+        facts    = fetcher.get_company_facts()
+        result   = analyzer.analyze_filing(text, req.form_type, req.ticker.upper(), facts=facts)
+        return {"ticker": req.ticker.upper(), "form_type": req.form_type, "analysis": result}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/query")
+def query(req: QueryReq):
+    try:
+        fetcher  = SECFetcher(req.ticker.upper())
+        analyzer = SECAnalyzer()
+        text     = _get_text(fetcher, req.document_url)
+        facts    = fetcher.get_company_facts()
+        answer   = analyzer.query_filing(text, req.form_type, req.ticker.upper(), req.question, facts=facts)
+        return {"ticker": req.ticker.upper(), "question": req.question, "answer": answer}
+    except Exception as e:
+        raise HTTPException(500, str(e))
