@@ -22,6 +22,7 @@ export default function Nav() {
     { href: "/dashboard", label: "Dashboard" },
     { href: "/screener",  label: "Screener"  },
     { href: "/",          label: "Analyze"   },
+    { href: "/compare",   label: "Compare"   },
   ];
 
   return (

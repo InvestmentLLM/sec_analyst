@@ -47,6 +47,10 @@ class AskReq(BaseModel):
     ticker: str
     question: str
 
+class CompareAskReq(BaseModel):
+    tickers: list[str]
+    question: str
+
 
 @app.get("/")
 def root():
@@ -176,6 +180,71 @@ def ask(req: AskReq):
             fin_str, sections_str, computed_str, t, company, req.question
         )
         return {"ticker": t, "question": req.question, "answer": answer}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/compare-ask")
+def compare_ask(req: CompareAskReq):
+    """Ask a comparative question across multiple companies using their cached SEC data."""
+    tickers = [t.strip().upper() for t in req.tickers[:5] if t.strip()]
+    if not tickers:
+        raise HTTPException(400, "Provide at least one ticker.")
+    try:
+        analyzer = SECAnalyzer()
+        contexts = []
+        missing  = []
+
+        for t in tickers:
+            cached = _comprehensive_cache.get(t)
+            if not cached:
+                disk_hit = disk_cache.get(f"{t}_comprehensive", disk_cache.TTL_ANALYSIS)
+                if disk_hit:
+                    cached = disk_hit.get("_ask_cache")
+                    if cached:
+                        _comprehensive_cache[t] = cached
+
+            if cached:
+                company = cached.get("company", t)
+                contexts.append(
+                    f"=== {company} ({t}) ===\n"
+                    f"FINANCIALS:\n{cached['fin_str']}\n\n"
+                    f"COMPUTED METRICS:\n{cached['computed_str']}\n\n"
+                    f"FILING EXCERPTS:\n{cached['sections_str'][:2500]}"
+                )
+            else:
+                missing.append(t)
+
+        if not contexts:
+            raise HTTPException(404, "No cached data found. Analyze each company first.")
+
+        note = f"\n\nNote: No data available for: {', '.join(missing)}." if missing else ""
+        prompt = (
+            "You are comparing multiple companies side-by-side based on their SEC filings "
+            "and verified XBRL financial data. Be analytical, use specific numbers, and "
+            "compare directly.\n\n"
+            + "\n\n".join(contexts)
+            + note
+            + f"\n\nQUESTION: {req.question}"
+        )
+
+        resp = analyzer.client.chat.completions.create(
+            model=analyzer.model,
+            messages=[
+                {"role": "system", "content": analyzer.system_prompt},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=1800,
+        )
+        return {
+            "tickers":  tickers,
+            "question": req.question,
+            "answer":   resp.choices[0].message.content.strip(),
+            "missing":  missing,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 

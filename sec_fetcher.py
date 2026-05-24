@@ -142,6 +142,22 @@ class SECFetcher:
                 "current_liabilities": [("us-gaap", "LiabilitiesCurrent")],
                 "total_liabilities":   [("us-gaap", "Liabilities")],
                 "research_development":[("us-gaap", "ResearchAndDevelopmentExpense")],
+                "depreciation_amortization": [
+                    ("us-gaap", "DepreciationDepletionAndAmortization"),
+                    ("us-gaap", "DepreciationAndAmortization"),
+                    ("us-gaap", "Depreciation"),
+                    ("ifrs-full", "DepreciationAndAmortisationExpense"),
+                ],
+                "interest_expense": [
+                    ("us-gaap", "InterestExpense"),
+                    ("us-gaap", "InterestExpenseDebt"),
+                    ("us-gaap", "InterestAndDebtExpense"),
+                    ("ifrs-full", "FinanceCosts"),
+                ],
+                "exploration_expense": [
+                    ("us-gaap", "ExplorationExpense"),
+                    ("us-gaap", "ExplorationAbandonmentAndImpairmentExpense"),
+                ],
             }
 
             result = {}

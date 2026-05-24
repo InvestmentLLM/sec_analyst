@@ -122,6 +122,11 @@ class SECAnalyzer:
             "net_margin":          ("Net Margin",            "pct"),
             "operating_margin":    ("Operating Margin",      "pct"),
             "gross_margin":        ("Gross Margin",          "pct"),
+            "ebitda":              ("EBITDA",                "money"),
+            "ebitda_margin":       ("EBITDA Margin",         "pct"),
+            "ebitdax":             ("EBITDAX",               "money"),
+            "ebitdax_margin":      ("EBITDAX Margin",        "pct"),
+            "interest_coverage":   ("Interest Coverage",     "ratio"),
             "debt_to_equity":      ("Debt / Equity",         "ratio"),
             "current_ratio":       ("Current Ratio",         "ratio"),
             "roe":                 ("Return on Equity",      "pct"),
@@ -187,6 +192,9 @@ class SECAnalyzer:
         cx   = s("capex");           cx_v = lv(cx)
         ass  = s("total_assets");    a  = lv(ass)
         eps  = s("eps_diluted") or s("eps_basic")
+        da   = s("depreciation_amortization"); da_v = lv(da)
+        ie   = s("interest_expense");           ie_v = lv(ie)
+        ex   = s("exploration_expense");        ex_v = lv(ex)
 
         m = {
             "data_years": [dp["year"] for dp in rev],
@@ -239,6 +247,42 @@ class SECAnalyzer:
             if r: m["fcf_margin"] = round(fcf / r * 100, 1)
         m["eps_growth_yoy"] = yoy(eps)
         if eps: m["eps_latest"] = eps[-1]["value"]
+
+        # EBITDA = Operating Income + D&A
+        # Use aligned pair so D&A and operating income are from same year
+        if da_v is not None and o is not None:
+            by_yr_da  = {dp["year"]: dp["value"] for dp in da}
+            by_yr_op  = {dp["year"]: dp["value"] for dp in op}
+            common_da = sorted(set(by_yr_da) & set(by_yr_op))
+            if common_da:
+                yr_da = common_da[-1]
+                ebitda = by_yr_op[yr_da] + by_yr_da[yr_da]
+                m["ebitda"] = ebitda
+                # Align with revenue for margin
+                if r:
+                    by_yr_rev = {dp["year"]: dp["value"] for dp in rev}
+                    if yr_da in by_yr_rev and by_yr_rev[yr_da]:
+                        m["ebitda_margin"] = round(ebitda / by_yr_rev[yr_da] * 100, 1)
+                # EBITDAX = EBITDA + Exploration Expenses (oil & gas)
+                if ex_v is not None:
+                    by_yr_ex = {dp["year"]: dp["value"] for dp in ex}
+                    if yr_da in by_yr_ex:
+                        ebitdax = ebitda + abs(by_yr_ex[yr_da])
+                        m["ebitdax"] = ebitdax
+                        if r and yr_da in by_yr_rev and by_yr_rev[yr_da]:
+                            m["ebitdax_margin"] = round(ebitdax / by_yr_rev[yr_da] * 100, 1)
+
+        # Interest coverage = Operating Income / Interest Expense
+        if ie_v and ie_v != 0 and o is not None:
+            by_yr_ie  = {dp["year"]: dp["value"] for dp in ie}
+            by_yr_op2 = {dp["year"]: dp["value"] for dp in op}
+            common_ie = sorted(set(by_yr_ie) & set(by_yr_op2))
+            if common_ie:
+                yr_ie = common_ie[-1]
+                ie_aligned = by_yr_ie[yr_ie]
+                op_aligned = by_yr_op2[yr_ie]
+                if ie_aligned and ie_aligned != 0:
+                    m["interest_coverage"] = round(op_aligned / abs(ie_aligned), 1)
 
         return {k: v for k, v in m.items() if v is not None}
 
