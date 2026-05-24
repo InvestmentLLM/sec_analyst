@@ -1,6 +1,8 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase, authHeader } from "../lib/supabase";
+import { addToWatchlist, isInWatchlist } from "../lib/watchlist";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -213,7 +215,8 @@ function VerdictBadge({ verdict, confidence }: { verdict: string; confidence: st
 }
 
 /* ── Main ────────────────────────────────────────────────────────── */
-export default function Home() {
+function HomeInner() {
+  const searchParams = useSearchParams();
   const [inputVal,   setInputVal]   = useState("");
   const [ticker,     setTicker]     = useState("");
   const [analysis,   setAnalysis]   = useState<CompAnalysis | null>(null);
@@ -223,13 +226,23 @@ export default function Home() {
   const [messages,   setMessages]   = useState<Msg[]>([]);
   const [question,   setQuestion]   = useState("");
   const [askLoading, setAskLoading] = useState(false);
+  const [watched,    setWatched]    = useState(false);
+  const [watchMsg,   setWatchMsg]   = useState("");
   const chatEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  async function runAnalysis() {
-    const t = inputVal.trim().toUpperCase();
+  // Auto-analyze from URL param e.g. /?ticker=AAPL
+  useEffect(() => {
+    const t = searchParams.get("ticker")?.toUpperCase();
+    if (t) { setInputVal(t); runAnalysis(t); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function runAnalysis(overrideTicker?: string) {
+    const t = (overrideTicker ?? inputVal).trim().toUpperCase();
     if (!t) return;
+    setWatched(false); setWatchMsg("");
     setError(""); setAnalysis(null); setMessages([]); setLoading(true); setTicker(t);
 
     const steps = [
@@ -246,13 +259,29 @@ export default function Home() {
     try {
       const res = await fetch(`${API}/comprehensive/${t}`, { headers: await authHeader() });
       if (!res.ok) throw new Error((await res.json()).detail || "Analysis failed");
-      setAnalysis(await res.json());
+      const data = await res.json();
+      setAnalysis(data);
+      // check watchlist status
+      isInWatchlist(t).then(setWatched);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Error");
     } finally {
       clearInterval(iv);
       setLoading(false);
       setLoadStep("");
+    }
+  }
+
+  async function handleWatchToggle() {
+    if (!ticker || !analysis) return;
+    try {
+      await addToWatchlist(ticker, analysis.company_name);
+      setWatched(true);
+      setWatchMsg("Added to watchlist");
+      setTimeout(() => setWatchMsg(""), 2500);
+    } catch {
+      setWatchMsg("Set up the watchlist table first");
+      setTimeout(() => setWatchMsg(""), 3000);
     }
   }
 
@@ -283,44 +312,54 @@ export default function Home() {
   return (
     <main style={{ minHeight: "100vh", background: "#0a0a0f", color: "#e8e8f0" }}>
 
-      {/* ── Header ── */}
-      <header style={{ borderBottom: "1px solid #1e1e2e", padding: "0.8rem 1.5rem",
-        display: "flex", alignItems: "center", background: "#0d0d17", gap: 12 }}>
-        <span style={{ fontSize: 20, color: "#e8e8f0", flexShrink: 0 }}>SEC</span>
-        <span style={{ fontSize: 20, fontStyle: "italic", color: "#6b7aff", flexShrink: 0 }}>Lens</span>
-
-        {/* ticker input lives in header for more space */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 24, flex: 1, maxWidth: 320 }}>
+      {/* ── Search bar ── */}
+      <div style={{ padding: "1.2rem 1.5rem", borderBottom: "1px solid #1a1a2e",
+        background: "#0a0a0f" }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", gap: 8 }}>
           <input
             value={inputVal}
             onChange={e => setInputVal(e.target.value.toUpperCase())}
             onKeyDown={e => e.key === "Enter" && !loading && runAnalysis()}
-            placeholder="Enter ticker — AAPL, NVDA, TSLA…"
-            style={{ flex: 1, minWidth: 0, background: "#13131f", border: "1px solid #2a2a3e",
-              color: "#e8e8f0", padding: "7px 12px", borderRadius: 7,
+            placeholder="Enter ticker — AAPL, NVDA, TSLA, RRC…"
+            style={{ flex: 1, maxWidth: 360, background: "#13131f", border: "1px solid #2a2a3e",
+              color: "#e8e8f0", padding: "8px 14px", borderRadius: 7,
               fontSize: 14, fontFamily: "monospace", outline: "none" }}
           />
           <button
-            onClick={runAnalysis}
+            onClick={() => runAnalysis()}
             disabled={loading}
-            style={{ flexShrink: 0, background: "#6b7aff", border: "none", color: "#fff",
-              padding: "7px 18px", borderRadius: 7, fontSize: 13, fontWeight: "bold",
+            style={{ background: "#6b7aff", border: "none", color: "#fff",
+              padding: "8px 20px", borderRadius: 7, fontSize: 13, fontWeight: "bold",
               cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.6 : 1, whiteSpace: "nowrap" }}>
             {loading ? "…" : "Analyze"}
           </button>
+          {ticker && (
+            <span style={{ fontFamily: "monospace", fontSize: 12, color: "#33334d" }}>
+              ${ticker}
+            </span>
+          )}
+          {analysis && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+              {watchMsg && (
+                <span style={{ fontFamily: "monospace", fontSize: 11,
+                  color: watchMsg.includes("Added") ? "#22c55e" : "#f97316" }}>
+                  {watchMsg}
+                </span>
+              )}
+              <button
+                onClick={handleWatchToggle}
+                disabled={watched}
+                style={{ background: watched ? "#22c55e22" : "transparent",
+                  border: `1px solid ${watched ? "#22c55e44" : "#2a2a3e"}`,
+                  color: watched ? "#22c55e" : "#6666aa",
+                  padding: "5px 14px", borderRadius: 6, fontSize: 11,
+                  fontFamily: "monospace", cursor: watched ? "default" : "pointer" }}>
+                {watched ? "✓ Watchlist" : "+ Watchlist"}
+              </button>
+            </div>
+          )}
         </div>
-
-        <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 12, color: "#33334d", flexShrink: 0 }}>
-          {ticker ? `$${ticker}` : ""}
-        </span>
-        <button
-          onClick={async () => { await supabase.auth.signOut(); window.location.href = "/login"; }}
-          style={{ flexShrink: 0, background: "transparent", border: "1px solid #2a2a3e",
-            color: "#44445a", padding: "5px 12px", borderRadius: 6,
-            fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
-          sign out
-        </button>
-      </header>
+      </div>
 
       {/* ── Body ── */}
       <div style={{ padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1.2rem",
@@ -404,7 +443,7 @@ export default function Home() {
                 <Card title={`Revenue (bars) & Net Income (dots) · ${rev[0]?.year ?? ""}–${rev[rev.length-1]?.year ?? ""}`}>
                   <RevenueChart rev={rev} income={inc}/>
                 </Card>
-                <Card title="Key Metrics (from SEC XBRL)">
+                <Card title="Key Metrics · Verified from SEC XBRL" accent="#22c55e">
                   <dl style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {Object.entries(analysis.verified_metrics || {}).map(([label, val]) => (
                       <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
@@ -522,5 +561,13 @@ export default function Home() {
         })()}
       </div>
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={null}>
+      <HomeInner />
+    </Suspense>
   );
 }
