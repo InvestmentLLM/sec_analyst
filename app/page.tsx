@@ -3,6 +3,9 @@ import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase, authHeader } from "../lib/supabase";
 import { addToWatchlist, isInWatchlist } from "../lib/watchlist";
+import RiskSignals from "../components/RiskSignals";
+import ManagementTone from "../components/ManagementTone";
+import InsiderActivity from "../components/InsiderActivity";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -10,12 +13,22 @@ type Filing = { form_type: string; filed_date: string; accession_number: string;
 type SubScores = { revenue_growth: number; profitability: number; balance_sheet: number; earnings_quality: number; outlook: number; risk_profile: number };
 type DataPoint = { year: number; value: number };
 type FinData = Record<string, DataPoint[]>;
+type RiskSignalsData = {
+  altman_z?: { score: number; zone: string; components: Record<string, number>; data_year: number; model: string; thresholds: string } | null;
+  beneish_m?: { score: number; risk_level: string; components: Record<string, number>; components_used: string[]; data_year: number; thresholds: string } | null;
+  ai_interpretation?: string;
+};
+type ToneData = { trend: string; trend_score: number; notable_changes: string[]; new_risk_themes: string[]; recurring_strengths: string[]; ai_analysis: string; years_analyzed: number };
+type InsiderSummary = { total_transactions: number; transactions_90d: number; buys_90d: number; sells_90d: number; buy_value_90d: number; sell_value_90d: number; net_value_90d: number; net_sentiment: string };
+type InsiderTx = { date: string; owner: string; title: string; type: "Buy" | "Sell"; shares: number; price: number; value: number; is_director: boolean; is_officer: boolean };
 type CompAnalysis = {
   company_name: string; rating_score: number; rating_verdict: string; confidence: string;
   sub_scores: SubScores; summary: string; justification: string;
-  verified_metrics: Record<string, string>;   // computed in Python from XBRL — no LLM
+  verified_metrics: Record<string, string>;
   positives: string[]; risks: string[];
   red_flags: string[]; outlook: string; financial_data: FinData; filings_analyzed: Filing[];
+  risk_signals?: RiskSignalsData;
+  management_tone?: ToneData;
 };
 type Msg = { role: "user" | "assistant"; text: string };
 
@@ -226,8 +239,10 @@ function HomeInner() {
   const [messages,   setMessages]   = useState<Msg[]>([]);
   const [question,   setQuestion]   = useState("");
   const [askLoading, setAskLoading] = useState(false);
-  const [watched,    setWatched]    = useState(false);
-  const [watchMsg,   setWatchMsg]   = useState("");
+  const [watched,        setWatched]        = useState(false);
+  const [watchMsg,       setWatchMsg]       = useState("");
+  const [insiders,       setInsiders]       = useState<{ transactions: InsiderTx[]; summary: InsiderSummary } | null>(null);
+  const [insidersLoading,setInsidersLoading]= useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -243,6 +258,7 @@ function HomeInner() {
     const t = (overrideTicker ?? inputVal).trim().toUpperCase();
     if (!t) return;
     setWatched(false); setWatchMsg("");
+    setInsiders(null); setInsidersLoading(false);
     setError(""); setAnalysis(null); setMessages([]); setLoading(true); setTicker(t);
 
     const steps = [
@@ -261,8 +277,14 @@ function HomeInner() {
       if (!res.ok) throw new Error((await res.json()).detail || "Analysis failed");
       const data = await res.json();
       setAnalysis(data);
-      // check watchlist status
       isInWatchlist(t).then(setWatched);
+      // Lazy-load insider data after main analysis
+      setInsidersLoading(true);
+      fetch(`${API}/insiders/${t}`, { headers: await authHeader() })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.transactions) setInsiders(d); })
+        .catch(() => {})
+        .finally(() => setInsidersLoading(false));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Error");
     } finally {
@@ -460,7 +482,17 @@ function HomeInner() {
                 </Card>
               </div>
 
-              {/* Row 4: justification */}
+              {/* Row 4: Risk Signals */}
+              {analysis.risk_signals && (
+                <RiskSignals data={analysis.risk_signals}/>
+              )}
+
+              {/* Row 5: Management Tone */}
+              {analysis.management_tone && (
+                <ManagementTone data={analysis.management_tone}/>
+              )}
+
+              {/* Row 6: justification */}
               <Card title="In-Depth Analysis">
                 <p style={{ fontSize: 14, lineHeight: 1.9, color: "#c0c0d8", whiteSpace: "pre-line" }}>
                   {analysis.justification}
@@ -497,7 +529,14 @@ function HomeInner() {
                 </Card>
               </div>
 
-              {/* Row 6: chat */}
+              {/* Insider Activity */}
+              <InsiderActivity
+                data={insiders}
+                loading={insidersLoading}
+                ticker={ticker}
+              />
+
+              {/* Chat */}
               <Card title="Ask a Question About This Company">
                 {messages.length > 0 && (
                   <div style={{ maxHeight: 320, overflowY: "auto", marginBottom: 12,

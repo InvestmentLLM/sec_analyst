@@ -17,6 +17,7 @@ app.add_middleware(
 
 _text_cache: dict = {}
 _comprehensive_cache: dict = {}   # ticker → {fin_str, sections_str, computed_str, company}
+_insider_cache: dict = {}         # ticker → [transactions]
 
 
 def _get_text(fetcher, url):
@@ -180,6 +181,62 @@ def ask(req: AskReq):
             fin_str, sections_str, computed_str, t, company, req.question
         )
         return {"ticker": t, "question": req.question, "answer": answer}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/insiders/{ticker}")
+def get_insiders(ticker: str, refresh: bool = False):
+    """
+    Recent Form 4 open-market insider buy/sell transactions.
+    Excludes option exercises, grants, and gifts — real money only.
+    Cached 24 hours.
+    """
+    t = ticker.upper()
+    cache_key = f"{t}_insiders"
+
+    if not refresh:
+        cached = disk_cache.get(cache_key, disk_cache.TTL_ANALYSIS)
+        if cached is not None:
+            return {"ticker": t, **cached}
+
+    try:
+        from datetime import datetime, timedelta
+        fetcher      = SECFetcher(t)
+        transactions = fetcher.get_insider_transactions(count=25)
+
+        cutoff  = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        recent  = [tx for tx in transactions if tx["date"] >= cutoff]
+        buys    = [tx for tx in recent if tx["type"] == "Buy"]
+        sells   = [tx for tx in recent if tx["type"] == "Sell"]
+        buy_val = sum(tx["value"] for tx in buys)
+        sel_val = sum(tx["value"] for tx in sells)
+
+        if len(buys) > len(sells) * 1.5:
+            sentiment = "Bullish"
+        elif len(sells) > len(buys) * 1.5:
+            sentiment = "Bearish"
+        else:
+            sentiment = "Mixed"
+
+        summary = {
+            "total_transactions": len(transactions),
+            "transactions_90d":   len(recent),
+            "buys_90d":           len(buys),
+            "sells_90d":          len(sells),
+            "buy_value_90d":      buy_val,
+            "sell_value_90d":     sel_val,
+            "net_value_90d":      buy_val - sel_val,
+            "net_sentiment":      sentiment,
+        }
+
+        payload = {"transactions": transactions, "summary": summary}
+        disk_cache.put(cache_key, payload)
+        _insider_cache[t] = payload
+        return {"ticker": t, **payload}
+
+    except ValueError as e:
+        raise HTTPException(404, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 

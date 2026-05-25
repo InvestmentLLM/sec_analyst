@@ -426,6 +426,246 @@ class SECAnalyzer:
         ]
         return "\n".join(l for l in lines if "N/A" not in l or "Data covers" in l)
 
+    # ── risk models ──────────────────────────────────────────────────
+
+    def _compute_altman_z(self, facts: dict) -> dict | None:
+        """
+        Altman Z-Score (book-value variant) computed from SEC XBRL data.
+        Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
+        Uses book value of equity for X4 (no market cap available from XBRL).
+        Safe >2.99 | Grey 1.81–2.99 | Distress <1.81
+        """
+        def by_yr(key):
+            d = facts.get(key)
+            return {dp["year"]: dp["value"] for dp in d} if isinstance(d, list) and d else {}
+
+        ca = by_yr("current_assets");   cl = by_yr("current_liabilities")
+        ta = by_yr("total_assets");     re = by_yr("retained_earnings")
+        op = by_yr("operating_income"); eq = by_yr("total_equity")
+        tl = by_yr("total_liabilities");rv = by_yr("revenue")
+
+        common = set(ca) & set(cl) & set(ta) & set(op) & set(eq) & set(tl) & set(rv)
+        if not common:
+            return None
+        yr = max(common)
+
+        try:
+            ta_v = ta[yr]
+            if not ta_v:
+                return None
+            x1 = (ca[yr] - cl[yr]) / ta_v
+            x2 = re[yr]   / ta_v if yr in re else None
+            x3 = op[yr]   / ta_v
+            x4 = eq[yr]   / tl[yr] if yr in tl and tl[yr] else None
+            x5 = rv[yr]   / ta_v
+
+            if x4 is None:
+                return None
+
+            if x2 is not None:
+                z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
+                model = "5-factor"
+            else:
+                z = 1.2*x1 + 3.3*x3 + 0.6*x4 + 1.0*x5
+                model = "4-factor (retained earnings unavailable)"
+
+            zone = "Safe" if z > 2.99 else "Grey Zone" if z > 1.81 else "Distress"
+
+            comp = {
+                "X1_working_capital_ratio": round(x1, 3),
+                "X3_ebit_to_assets":        round(x3, 3),
+                "X4_equity_to_liabilities": round(x4, 3),
+                "X5_asset_turnover":        round(x5, 3),
+            }
+            if x2 is not None:
+                comp["X2_retained_earnings_ratio"] = round(x2, 3)
+
+            return {
+                "score": round(z, 2),
+                "zone":  zone,
+                "components": comp,
+                "data_year": yr,
+                "model": model,
+                "thresholds": "Safe >2.99 | Grey 1.81–2.99 | Distress <1.81",
+            }
+        except Exception:
+            return None
+
+    def _compute_beneish_m(self, facts: dict) -> dict | None:
+        """
+        Beneish M-Score (5-variable simplified model).
+        Flags statistical probability of earnings manipulation.
+        Requires two consecutive years of XBRL data.
+        Low Risk <-2.22 | Grey -2.22 to -1.78 | High Risk >-1.78
+        """
+        def by_yr(key):
+            d = facts.get(key)
+            return {dp["year"]: dp["value"] for dp in d} if isinstance(d, list) and d else {}
+
+        rv  = by_yr("revenue");          gp  = by_yr("gross_profit")
+        ta  = by_yr("total_assets");     ca  = by_yr("current_assets")
+        ppe = by_yr("property_plant_equipment")
+        da  = by_yr("depreciation_amortization")
+        ar  = by_yr("accounts_receivable")
+
+        # Find latest year that has a prior year in revenue
+        pairs = [(y, y-1) for y in sorted(rv, reverse=True) if (y-1) in rv and y in ta and (y-1) in ta]
+        if not pairs:
+            return None
+        yr, yr_p = pairs[0]
+
+        try:
+            comp = {}
+
+            # DSRI – Days Sales Receivable Index
+            if yr in ar and yr_p in ar and rv.get(yr) and rv.get(yr_p):
+                dsri = (ar[yr] / rv[yr]) / (ar[yr_p] / rv[yr_p])
+                comp["DSRI"] = round(dsri, 3)
+
+            # GMI – Gross Margin Index
+            if yr in gp and yr_p in gp and rv.get(yr) and rv.get(yr_p):
+                gm_t = gp[yr]  / rv[yr]
+                gm_p = gp[yr_p] / rv[yr_p]
+                if gm_t:
+                    comp["GMI"] = round(gm_p / gm_t, 3)
+
+            # AQI – Asset Quality Index
+            if yr in ppe and yr_p in ppe and ta.get(yr) and ta.get(yr_p):
+                aq_t = (ta[yr]  - ca.get(yr,  0) - ppe[yr])  / ta[yr]
+                aq_p = (ta[yr_p] - ca.get(yr_p, 0) - ppe[yr_p]) / ta[yr_p]
+                if aq_p:
+                    comp["AQI"] = round(aq_t / aq_p, 3)
+
+            # SGI – Sales Growth Index
+            if rv.get(yr_p):
+                comp["SGI"] = round(rv[yr] / rv[yr_p], 3)
+
+            # DEPI – Depreciation Index
+            if yr in da and yr_p in da and yr in ppe and yr_p in ppe:
+                denom_t = da[yr]  + ppe[yr]
+                denom_p = da[yr_p] + ppe[yr_p]
+                if denom_t and denom_p:
+                    depi = (da[yr_p] / denom_p) / (da[yr] / denom_t)
+                    comp["DEPI"] = round(depi, 3)
+
+            if len(comp) < 3:
+                return None  # insufficient data
+
+            weights = {"DSRI": 0.823, "GMI": 0.906, "AQI": 0.593, "SGI": 0.717, "DEPI": 0.107}
+            m = -6.065 + sum(weights[k] * v for k, v in comp.items() if k in weights)
+
+            risk = ("High Risk of Manipulation" if m > -1.78
+                    else "Grey Zone" if m > -2.22
+                    else "Low Risk of Manipulation")
+
+            return {
+                "score": round(m, 2),
+                "risk_level": risk,
+                "components": comp,
+                "components_used": list(comp.keys()),
+                "data_year": yr,
+                "thresholds": "Low Risk <-2.22 | Grey -2.22 to -1.78 | High Risk >-1.78",
+            }
+        except Exception:
+            return None
+
+    def analyze_risk_signals(self, altman: dict, beneish: dict,
+                             computed: dict, company: str, ticker: str) -> str:
+        """LLM interprets Altman Z and Beneish M scores in company-specific context."""
+        parts = []
+        if altman:
+            parts.append(
+                f"Altman Z-Score: {altman['score']} | Zone: {altman['zone']} "
+                f"({altman['thresholds']}) | Components: {altman['components']}"
+            )
+        if beneish:
+            parts.append(
+                f"Beneish M-Score: {beneish['score']} | Risk: {beneish['risk_level']} "
+                f"({beneish['thresholds']}) | Components: {beneish['components']}"
+            )
+        fv = self._fv
+        ctx = [f"{lbl}: {fv(computed[k])}" for k, lbl in [
+            ("revenue_latest","Revenue"), ("ebitda","EBITDA"),
+            ("free_cash_flow","FCF"), ("debt_to_equity","D/E"),
+            ("current_ratio","Current Ratio"), ("net_margin","Net Margin"),
+        ] if k in computed]
+
+        prompt = (
+            f"Interpret these risk model results for {company} ({ticker}).\n\n"
+            "MATHEMATICALLY COMPUTED SCORES (from SEC XBRL data):\n"
+            + "\n".join(parts) + "\n\n"
+            "FINANCIAL CONTEXT:\n" + " | ".join(ctx) + "\n\n"
+            "Write 3-4 sentences interpreting what these scores mean specifically for this company. "
+            "Reference the exact score numbers. Explain bankruptcy risk (Z-Score) and earnings quality "
+            "(M-Score) implications. Be direct — institutional analyst tone. "
+            "Do NOT use any numbers not listed above."
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content":
+                     "You are a quantitative risk analyst. Be precise, cite exact numbers, and be direct."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                max_tokens=280,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception:
+            return ""
+
+    def analyze_management_tone(self, sections: dict, ticker: str, company: str) -> dict | None:
+        """
+        Detect MD&A language drift across multiple years.
+        Identifies tone shifts, new risk themes, and language changes
+        that precede fundamental deterioration.
+        """
+        mda_by_year: dict[str, str] = {}
+        for k, v in sections.items():
+            if "mda" not in k.lower() or not v:
+                continue
+            label = "latest" if k == "mda" else k.rsplit("_", 1)[-1]
+            mda_by_year[label] = v[:3500]
+
+        if len(mda_by_year) < 2:
+            return None
+
+        mda_block = "\n\n".join(
+            f"=== MD&A {yr.upper()} ===\n{text}"
+            for yr, text in sorted(mda_by_year.items(), reverse=True)
+        )
+
+        prompt = (
+            f"Analyze management tone CHANGES across {len(mda_by_year)} years of "
+            f"{company} ({ticker}) MD&A sections.\n\n"
+            f"{mda_block}\n\n"
+            "Return JSON with EXACTLY these keys:\n"
+            '{"trend": <"Improving"|"Stable"|"Cautious"|"Deteriorating">, '
+            '"trend_score": <integer -3 to 3>, '
+            '"notable_changes": [<up to 3 specific language shifts, each stating which year and exact phrasing changed>], '
+            '"new_risk_themes": [<up to 3 new risks in the latest year not present in prior years>], '
+            '"recurring_strengths": [<up to 2 consistent positive themes across all years>], '
+            '"ai_analysis": <2-3 sentences on what the tone evolution signals about management confidence and forward outlook>}'
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content":
+                     "Expert in corporate communication analysis. Focus on specific language changes, not summaries."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"},
+                max_tokens=500,
+            )
+            result = json.loads(resp.choices[0].message.content)
+            result["years_analyzed"] = len(mda_by_year)
+            return result
+        except Exception:
+            return None
+
     # ── analysis ─────────────────────────────────────────────────────
 
     def analyze_comprehensive(self, data: dict, ticker: str) -> dict:
@@ -524,6 +764,31 @@ Rating: 85-100=Strong Buy, 70-84=Buy, 50-69=Hold, 30-49=Sell, 0-29=Strong Sell."
             result = json.loads(resp.choices[0].message.content)
             result["filings_analyzed"] = filings
             result["_computed"]        = computed
+
+            # ── Altman Z-Score + Beneish M-Score (pure math, no LLM for numbers) ──
+            altman  = self._compute_altman_z(facts)
+            beneish = self._compute_beneish_m(facts)
+            if altman or beneish:
+                try:
+                    risk_ai = self.analyze_risk_signals(
+                        altman or {}, beneish or {}, computed, company, ticker
+                    )
+                except Exception:
+                    risk_ai = ""
+                result["risk_signals"] = {
+                    "altman_z":          altman,
+                    "beneish_m":         beneish,
+                    "ai_interpretation": risk_ai,
+                }
+
+            # ── MD&A Sentiment Drift ──────────────────────────────────────────────
+            try:
+                tone = self.analyze_management_tone(sections, ticker, company)
+                if tone:
+                    result["management_tone"] = tone
+            except Exception:
+                pass
+
             return result
         except Exception as e:
             return {"error": str(e)}

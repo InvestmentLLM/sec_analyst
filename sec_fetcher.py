@@ -1,4 +1,5 @@
 import requests, os, re
+import xml.etree.ElementTree as ET
 from datetime import date
 from bs4 import BeautifulSoup
 from utils import rate_limit, clean_text
@@ -157,6 +158,29 @@ class SECFetcher:
                 "exploration_expense": [
                     ("us-gaap", "ExplorationExpense"),
                     ("us-gaap", "ExplorationAbandonmentAndImpairmentExpense"),
+                ],
+                "accounts_receivable": [
+                    ("us-gaap", "AccountsReceivableNetCurrent"),
+                    ("us-gaap", "ReceivablesNetCurrent"),
+                    ("us-gaap", "AccountsReceivableNet"),
+                    ("ifrs-full", "TradeAndOtherCurrentReceivables"),
+                ],
+                "retained_earnings": [
+                    ("us-gaap", "RetainedEarningsAccumulatedDeficit"),
+                    ("ifrs-full", "RetainedEarnings"),
+                ],
+                "property_plant_equipment": [
+                    ("us-gaap", "PropertyPlantAndEquipmentNet"),
+                    ("ifrs-full", "PropertyPlantAndEquipment"),
+                ],
+                "sga_expense": [
+                    ("us-gaap", "SellingGeneralAndAdministrativeExpense"),
+                    ("us-gaap", "GeneralAndAdministrativeExpense"),
+                ],
+                "inventory": [
+                    ("us-gaap", "InventoryNet"),
+                    ("us-gaap", "Inventories"),
+                    ("ifrs-full", "Inventories"),
                 ],
             }
 
@@ -453,3 +477,91 @@ class SECFetcher:
             "filing_sections": sections,
             "primary_filing":  primary_filing,
         }
+
+    def get_insider_transactions(self, count: int = 20) -> list:
+        """
+        Fetch and parse recent Form 4 open-market insider buy/sell transactions.
+        Filters to transaction codes P (purchase) and S (sale) only —
+        excludes option exercises, grants, and gifts.
+        """
+        if not self._submissions:
+            self.get_company_info()
+
+        recent       = self._submissions.get("filings", {}).get("recent", {})
+        forms        = recent.get("form", [])
+        accessions   = recent.get("accessionNumber", [])
+        filed_dates  = recent.get("filingDate", [])
+        primary_docs = recent.get("primaryDocument", [])
+
+        form4_list = []
+        for i, f in enumerate(forms):
+            if f == "4":
+                acc = accessions[i]   if i < len(accessions)   else ""
+                doc = primary_docs[i] if i < len(primary_docs) else ""
+                dt  = filed_dates[i]  if i < len(filed_dates)  else ""
+                if acc and doc and doc.lower().endswith((".xml", ".htm")):
+                    form4_list.append({"accession": acc, "doc": doc, "date": dt})
+
+        form4_list = form4_list[:count]
+        cik = int(self.get_cik())
+        transactions = []
+
+        for f4 in form4_list:
+            try:
+                acc_clean = f4["accession"].replace("-", "")
+                url = f"{self.BASE_URL}/Archives/edgar/data/{cik}/{acc_clean}/{f4['doc']}"
+                resp = self._get(url)
+
+                root = ET.fromstring(resp.content)
+
+                # ── Reporting owner ──────────────────────────────────────
+                owner_name  = ""
+                owner_title = ""
+                is_director = False
+                is_officer  = False
+                for ro in root.findall(".//reportingOwner"):
+                    n = ro.find(".//rptOwnerName")
+                    t = ro.find(".//officerTitle")
+                    d = ro.find(".//isDirector")
+                    o = ro.find(".//isOfficer")
+                    if n is not None: owner_name  = (n.text or "").strip().title()
+                    if t is not None: owner_title = (t.text or "").strip()
+                    if d is not None: is_director = d.text == "1"
+                    if o is not None: is_officer  = o.text == "1"
+                    break  # first owner only
+
+                # ── Non-derivative transactions (actual shares) ───────────
+                for txn in root.findall(".//nonDerivativeTransaction"):
+                    code_el = txn.find(".//transactionCode")
+                    if code_el is None or code_el.text not in ("P", "S"):
+                        continue  # skip grants, option exercises, gifts
+
+                    date_el   = txn.find(".//transactionDate/value")
+                    shares_el = txn.find(".//transactionAmounts/transactionShares/value")
+                    price_el  = txn.find(".//transactionAmounts/transactionPricePerShare/value")
+
+                    if shares_el is None:
+                        continue
+                    try:
+                        shares   = abs(float(shares_el.text or "0"))
+                        price    = float(price_el.text or "0") if price_el is not None else 0.0
+                        txn_date = date_el.text if date_el is not None else f4["date"]
+                        if shares > 0:
+                            transactions.append({
+                                "date":        txn_date,
+                                "owner":       owner_name or "Unknown",
+                                "title":       owner_title or ("Director" if is_director else "Insider"),
+                                "type":        "Buy" if code_el.text == "P" else "Sell",
+                                "shares":      int(shares),
+                                "price":       round(price, 2),
+                                "value":       round(shares * price),
+                                "is_director": is_director,
+                                "is_officer":  is_officer,
+                            })
+                    except (ValueError, TypeError):
+                        continue
+            except Exception:
+                continue  # skip malformed filings silently
+
+        transactions.sort(key=lambda x: x["date"], reverse=True)
+        return transactions[:50]
