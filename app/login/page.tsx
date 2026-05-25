@@ -1,16 +1,36 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 
 type Mode = "password" | "magic" | "reset";
 
-export default function LoginPage() {
+const CALLBACK_ERRORS: Record<string, string> = {
+  auth_error:    "Sign-in link failed. Please request a new one.",
+  link_expired:  "This link has expired or was already used. Request a new one below.",
+  wrong_browser: "This link must be opened in the same browser where you requested it. Please request a new link here.",
+};
+
+function LoginContent() {
+  const searchParams = useSearchParams();
   const [mode,     setMode]     = useState<Mode>("password");
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState("");
   const [sent,     setSent]     = useState(false);
+
+  useEffect(() => {
+    const code = searchParams.get("error");
+    if (code && CALLBACK_ERRORS[code]) {
+      setError(CALLBACK_ERRORS[code]);
+      // Default to magic link mode so they can immediately retry
+      if (code === "wrong_browser" || code === "link_expired" || code === "auth_error") {
+        setMode("magic");
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -61,6 +81,11 @@ export default function LoginPage() {
               </p>
               <p style={{ fontFamily: "monospace", fontSize: 11, color: "#44445a", lineHeight: 1.7 }}>
                 Check your inbox and click the link.<br/>It expires in 1 hour.
+              </p>
+              <p style={{ fontFamily: "monospace", fontSize: 10, color: "#33334d",
+                lineHeight: 1.7, marginTop: 10, background: "#0a0a0f",
+                padding: "8px 10px", borderRadius: 6, border: "1px solid #1a1a2a" }}>
+                Open the link in this browser — it won&apos;t work if opened in a different browser or email app.
               </p>
               <button onClick={() => { setSent(false); setEmail(""); setMode("password"); }}
                 style={{ marginTop: 20, background: "transparent", border: "none",
@@ -148,5 +173,13 @@ export default function LoginPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginContent />
+    </Suspense>
   );
 }
