@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sec-analyst-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: USER_CONTACT
+        value: sec-analyst research@secanalyst.app
