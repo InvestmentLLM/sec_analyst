@@ -683,19 +683,49 @@ class SECAnalyzer:
         earliest = computed.get("earliest_year", "N/A")
         latest   = computed.get("latest_year",   "N/A")
 
-        filing_list = ", ".join(f"{f['form_type']} ({f['filed_date']})" for f in filings[:8])
+        filing_list = ", ".join(f"{f['form_type']} ({f['filed_date']})" for f in filings[:14])
         pf_label    = f"{pf.get('form_type','N/A')} filed {pf.get('filed_date','N/A')}"
 
-        # Include MD&A from multiple years for trend comparison
-        QUALITATIVE_KEYS = {"business", "risk_factors", "mda"}
+        # Build sections string from all available filing types.
+        # Priority: 10-K latest → 10-K prior years → 10-Q → 8-K events → proxy.
+        ANNUAL_KEYS = {"business", "risk_factors", "mda", "financial_statements"}
+
+        def _section_label_and_limit(k: str) -> tuple:
+            kl = k.lower()
+            if kl.startswith("8k_"):
+                date_part = kl[3:13].rstrip("_0123456789").strip("_")
+                return f"8-K MATERIAL EVENT ({date_part})", 1_800
+            if "10q" in kl:
+                base = kl.split("_10q")[0].upper().replace("_", " ")
+                period = kl.rsplit("_", 1)[-1] if "_" in kl.rsplit("10q", 1)[-1] else ""
+                return f"10-Q {base} ({period})", 2_500
+            if "proxy" in kl:
+                return "DEF 14A — EXECUTIVE COMPENSATION", 2_500
+            if kl in ANNUAL_KEYS:
+                return f"{k.upper().replace('_', ' ')} (10-K LATEST)", 3_500
+            for yr in range(2018, 2028):
+                if kl.endswith(f"_{yr}"):
+                    base = kl.rsplit(f"_{yr}", 1)[0].upper().replace("_", " ")
+                    return f"{base} (10-K {yr})", 2_000
+            return k.upper().replace("_", " "), 1_500
+
+        def _section_priority(k: str) -> int:
+            kl = k.lower()
+            if kl in ANNUAL_KEYS:                                        return 0
+            if any(kl.endswith(f"_{y}") for y in range(2018, 2028)):    return 1
+            if "10q" in kl:                                              return 2
+            if kl.startswith("8k_"):                                     return 3
+            if "proxy" in kl:                                            return 4
+            return 5
+
         text_parts = []
         for k, v in sections.items():
-            base_key = k.split("_")[0] if "_20" in k else k
-            if base_key not in QUALITATIVE_KEYS:
+            if not v:
                 continue
-            label = k.upper().replace("_", " ")
-            text_parts.append(f"=== {label} ===\n{v[:6000]}")
-        sections_str = "\n\n".join(text_parts[:4])  # up to 4 sections to limit tokens
+            label, limit = _section_label_and_limit(k)
+            text_parts.append((_section_priority(k), f"=== {label} ===\n{v[:limit]}"))
+        text_parts.sort(key=lambda x: x[0])
+        sections_str = "\n\n".join(t for _, t in text_parts[:8])
 
         prompt = f"""Analyze {company} ({ticker}) — {industry}.
 
@@ -711,7 +741,7 @@ SUMMARY METRICS (FY{earliest}–FY{latest}):
 RAW XBRL DATA (use if not in TRENDS above):
 {fin_str}
 
-SEC FILING TEXT — qualitative context only, do NOT extract figures from this:
+SEC FILING TEXT (10-K annual, 10-Q quarterly, 8-K events, DEF 14A proxy — qualitative context; do NOT extract dollar figures from here):
 {sections_str[:8000]}
 
 REQUIREMENTS:

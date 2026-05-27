@@ -438,33 +438,122 @@ class SECFetcher:
             sections["full_text"] = full[:40_000]
         return sections
 
+    # ── 10-Q text extraction ─────────────────────────────────────────
+
+    def get_10q_sections(self, document_url: str) -> dict:
+        """
+        Extract key sections from a 10-Q filing.
+        10-Qs use Item 2 for MD&A and Item 1A for risk-factor updates.
+        """
+        full = self.get_filing_text(document_url, max_chars=300_000)
+        defs = [
+            ("mda", [
+                r"(?i)item\s+2\.?\s{0,5}management.{0,60}discussion",
+                r"(?i)management.{0,10}discussion\s+and\s+analysis",
+            ], 7_000),
+            ("risk_factors", [
+                r"(?i)item\s+1a\.?\s{0,5}risk\s+factors",
+            ], 3_500),
+        ]
+        sections = {}
+        for key, patterns, max_len in defs:
+            text = self._find_section(full, patterns, max_len)
+            if text:
+                sections[key] = text
+        if not sections:
+            sections["quarterly_update"] = full[:6_000]
+        return sections
+
+    # ── DEF 14A proxy extraction ──────────────────────────────────────
+
+    def get_proxy_sections(self, document_url: str) -> str:
+        """
+        Extract the Compensation Discussion & Analysis (CD&A) section from a
+        DEF 14A proxy statement. Falls back to the full summary comp table.
+        """
+        full = self.get_filing_text(document_url, max_chars=250_000)
+        patterns = [
+            r"(?i)compensation\s+discussion\s+and\s+analysis",
+            r"(?i)executive\s+compensation\s+overview",
+            r"(?i)summary\s+compensation\s+table",
+        ]
+        text = self._find_section(full, patterns, 5_000)
+        return text if text else full[:3_000]
+
+    # ── 8-K short text extraction ─────────────────────────────────────
+
+    def get_8k_text(self, document_url: str) -> str:
+        """
+        Return up to 5 000 chars of an 8-K filing.
+        8-Ks are short by design; this captures earnings releases,
+        M&A announcements, leadership changes, and guidance updates.
+        """
+        return self.get_filing_text(document_url, max_chars=5_000)
+
+    # ── comprehensive data ────────────────────────────────────────────
+
     def get_comprehensive_data(self) -> dict:
         info      = self.get_company_info()
         facts     = self.get_company_facts()
-        annual    = self.get_recent_filings(["10-K"], count=3)   # 3 years of 10-Ks
-        quarterly = self.get_recent_filings(["10-Q"], count=4)   # last 4 quarters
-        recent_8k = self.get_recent_filings(["8-K"], count=5)    # more recent events
-        all_filings = annual + quarterly + recent_8k
+        annual    = self.get_recent_filings(["10-K"],    count=3)   # 3 years of 10-Ks
+        quarterly = self.get_recent_filings(["10-Q"],    count=4)   # last 4 quarters
+        recent_8k = self.get_recent_filings(["8-K"],     count=6)   # recent events
+        proxy_f   = self.get_recent_filings(["DEF 14A"], count=1)   # proxy statement
+        all_filings = annual + quarterly + recent_8k + proxy_f
 
-        # Pull MD&A + risk sections from up to 3 annual filings for trend comparison
+        # ── Annual 10-K sections (3 years, for trend comparison) ──────
         multi_year_sections: dict[str, dict] = {}
         primary_filing = {}
         for i, filing in enumerate(annual[:3]):
             if i == 0:
                 primary_filing = filing
-            secs = self.get_filing_sections(filing["document_url"])
-            label = filing.get("filed_date", f"year_{i}")[:4]   # e.g. "2024"
-            multi_year_sections[label] = secs
+            try:
+                secs = self.get_filing_sections(filing["document_url"])
+                label = filing.get("filed_date", f"year_{i}")[:4]   # e.g. "2024"
+                multi_year_sections[label] = secs
+            except Exception:
+                pass
 
-        # Flatten: latest year sections are primary; older years appended with year label
+        # Flatten: latest year sections are primary; older years suffixed with year
         sections: dict = {}
         for year in sorted(multi_year_sections.keys(), reverse=True):
             for k, v in multi_year_sections[year].items():
                 if k not in sections:
-                    sections[k] = v                              # latest = primary
+                    sections[k] = v                        # latest = primary
                 else:
-                    sections[f"{k}_{year}"] = v                  # older year labelled
+                    sections[f"{k}_{year}"] = v            # prior year labelled
 
+        # ── 10-Q MD&A from the 2 most recent quarters ────────────────
+        for i, filing in enumerate(quarterly[:2]):
+            try:
+                q_secs = self.get_10q_sections(filing["document_url"])
+                # Use YYYY-MM so it sorts and labels cleanly
+                period = filing.get("filed_date", f"q{i+1}")[:7]
+                for k, v in q_secs.items():
+                    sections[f"{k}_10q_{period}"] = v
+            except Exception:
+                pass
+
+        # ── 8-K text from the 4 most recent material events ──────────
+        for i, filing in enumerate(recent_8k[:4]):
+            try:
+                text = self.get_8k_text(filing["document_url"])
+                if text and not text.startswith("Error"):
+                    date_str = filing.get("filed_date", f"evt{i+1}")[:10]
+                    sections[f"8k_{date_str}_{i}"] = text
+            except Exception:
+                pass
+
+        # ── DEF 14A proxy (executive compensation) ───────────────────
+        if proxy_f:
+            try:
+                proxy_text = self.get_proxy_sections(proxy_f[0]["document_url"])
+                if proxy_text:
+                    sections["proxy_compensation"] = proxy_text
+            except Exception:
+                pass
+
+        # Fallback if no annual sections were extracted
         if not sections and quarterly:
             primary_filing = quarterly[0]
             sections["full_text"] = self.get_filing_text(
