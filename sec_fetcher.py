@@ -12,8 +12,24 @@ class SECFetcher:
     HEADERS = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 
     FUNDAMENTAL_FORMS = [
-        "10-K", "10-Q", "8-K", "13F-HR", "13F-NT",
-        "S-1", "S-3", "S-4", "20-F", "6-K", "DEF 14A", "4", "3", "5",
+        # Annual / quarterly core
+        "10-K", "10-Q", "10-K/A", "10-Q/A",
+        # Foreign-filer equivalents
+        "20-F", "6-K", "20-F/A",
+        # Current events
+        "8-K", "8-K/A",
+        # Proxy & governance
+        "DEF 14A", "DEFA14A", "DEFC14A",
+        # Equity offerings / dilution
+        "S-1", "S-3", "S-4", "424B2", "424B3", "424B4",
+        # Major shareholder activity
+        "SC 13D", "SC 13G", "SC 13D/A", "SC 13G/A",
+        # Late-filing / going-dark red flags
+        "NT 10-K", "NT 10-Q",
+        # Insider ownership
+        "3", "4", "5",
+        # Institutional holdings
+        "13F-HR",
     ]
 
     def __init__(self, ticker: str):
@@ -493,49 +509,77 @@ class SECFetcher:
     # ── comprehensive data ────────────────────────────────────────────
 
     def get_comprehensive_data(self) -> dict:
-        info      = self.get_company_info()
-        facts     = self.get_company_facts()
-        annual    = self.get_recent_filings(["10-K"],    count=3)   # 3 years of 10-Ks
-        quarterly = self.get_recent_filings(["10-Q"],    count=4)   # last 4 quarters
-        recent_8k = self.get_recent_filings(["8-K"],     count=6)   # recent events
-        proxy_f   = self.get_recent_filings(["DEF 14A"], count=1)   # proxy statement
-        all_filings = annual + quarterly + recent_8k + proxy_f
+        info  = self.get_company_info()
+        facts = self.get_company_facts()
 
-        # ── Annual 10-K sections (3 years, for trend comparison) ──────
-        multi_year_sections: dict[str, dict] = {}
-        primary_filing = {}
+        # ── Detect foreign filer (uses 20-F / 6-K instead of 10-K / 10-Q) ──
+        annual_forms    = ["10-K", "10-K/A"]
+        quarterly_forms = ["10-Q", "10-Q/A"]
+        cat = (info.get("category") or "").lower()
+        if "foreign" in cat:
+            annual_forms    = ["20-F", "20-F/A"]
+            quarterly_forms = ["6-K"]
+
+        # ── Fetch filing metadata lists ───────────────────────────────
+        annual     = self.get_recent_filings(annual_forms,                  count=3)
+        quarterly  = self.get_recent_filings(quarterly_forms,               count=4)
+        events_8k  = self.get_recent_filings(["8-K", "8-K/A"],              count=6)
+        proxy_f    = self.get_recent_filings(["DEF 14A", "DEFA14A"],        count=1)
+        # Equity-offering risk (S-1 IPO, S-3 shelf, 424B actual prospectus)
+        offering_f = self.get_recent_filings(["S-1", "S-3", "S-4"],         count=2)
+        prosp_f    = self.get_recent_filings(["424B2", "424B3", "424B4"],    count=2)
+        # Major shareholder activity
+        sc13_f     = self.get_recent_filings(["SC 13D", "SC 13G",
+                                              "SC 13D/A", "SC 13G/A"],      count=3)
+        # Restatement & late-filing red flags (note-only — no text needed)
+        amended_f  = self.get_recent_filings(["10-K/A", "10-Q/A",
+                                              "20-F/A"],                     count=2)
+        nt_f       = self.get_recent_filings(["NT 10-K", "NT 10-Q"],         count=2)
+
+        # Build the master filing list (deduplicated)
+        raw_list = (annual + quarterly + events_8k + proxy_f +
+                    offering_f + prosp_f + sc13_f + amended_f + nt_f)
+        seen: set = set()
+        all_filings = []
+        for f in raw_list:
+            an = f.get("accession_number", "")
+            if an and an not in seen:
+                seen.add(an)
+                all_filings.append(f)
+
+        # ── Annual sections (3 years of 10-K / 20-F text) ────────────
+        multi_year: dict[str, dict] = {}
+        primary_filing: dict = {}
         for i, filing in enumerate(annual[:3]):
             if i == 0:
                 primary_filing = filing
             try:
-                secs = self.get_filing_sections(filing["document_url"])
-                label = filing.get("filed_date", f"year_{i}")[:4]   # e.g. "2024"
-                multi_year_sections[label] = secs
+                secs  = self.get_filing_sections(filing["document_url"])
+                label = filing.get("filed_date", f"year_{i}")[:4]
+                multi_year[label] = secs
             except Exception:
                 pass
 
-        # Flatten: latest year sections are primary; older years suffixed with year
         sections: dict = {}
-        for year in sorted(multi_year_sections.keys(), reverse=True):
-            for k, v in multi_year_sections[year].items():
+        for year in sorted(multi_year.keys(), reverse=True):
+            for k, v in multi_year[year].items():
                 if k not in sections:
-                    sections[k] = v                        # latest = primary
+                    sections[k] = v
                 else:
-                    sections[f"{k}_{year}"] = v            # prior year labelled
+                    sections[f"{k}_{year}"] = v
 
-        # ── 10-Q MD&A from the 2 most recent quarters ────────────────
+        # ── 10-Q / 6-K text (2 most recent quarters) ─────────────────
         for i, filing in enumerate(quarterly[:2]):
             try:
                 q_secs = self.get_10q_sections(filing["document_url"])
-                # Use YYYY-MM so it sorts and labels cleanly
                 period = filing.get("filed_date", f"q{i+1}")[:7]
                 for k, v in q_secs.items():
                     sections[f"{k}_10q_{period}"] = v
             except Exception:
                 pass
 
-        # ── 8-K text from the 4 most recent material events ──────────
-        for i, filing in enumerate(recent_8k[:4]):
+        # ── 8-K text (4 most recent material events) ──────────────────
+        for i, filing in enumerate(events_8k[:4]):
             try:
                 text = self.get_8k_text(filing["document_url"])
                 if text and not text.startswith("Error"):
@@ -544,7 +588,7 @@ class SECFetcher:
             except Exception:
                 pass
 
-        # ── DEF 14A proxy (executive compensation) ───────────────────
+        # ── DEF 14A proxy (executive compensation) ────────────────────
         if proxy_f:
             try:
                 proxy_text = self.get_proxy_sections(proxy_f[0]["document_url"])
@@ -553,7 +597,34 @@ class SECFetcher:
             except Exception:
                 pass
 
-        # Fallback if no annual sections were extracted
+        # ── SC 13D / SC 13G (major shareholders & activists) ─────────
+        for i, filing in enumerate(sc13_f[:2]):
+            try:
+                text = self.get_filing_text(filing["document_url"], max_chars=4_000)
+                if text and not text.startswith("Error"):
+                    form  = filing.get("form_type", "13D-G").replace(" ", "")
+                    dated = filing.get("filed_date", f"s{i}")[:10]
+                    sections[f"sc13_{form}_{dated}"] = text
+            except Exception:
+                pass
+
+        # ── S-1 / S-3 / 424B (equity offering / dilution risk) ────────
+        offering_all = (offering_f + prosp_f)[:2]
+        for i, filing in enumerate(offering_all):
+            try:
+                text = self.get_filing_text(filing["document_url"], max_chars=4_000)
+                if text and not text.startswith("Error"):
+                    form  = filing.get("form_type", "offering").replace(" ", "")
+                    dated = filing.get("filed_date", f"o{i}")[:10]
+                    sections[f"offering_{form}_{dated}"] = text
+            except Exception:
+                pass
+
+        # ── Red-flag signals (no text — mention in filing list is enough) ──
+        # NT 10-K / NT 10-Q and 10-K/A / 10-Q/A appear in all_filings;
+        # the LLM sees the form_type and filed_date and will flag them.
+
+        # Fallback if no annual text was extracted
         if not sections and quarterly:
             primary_filing = quarterly[0]
             sections["full_text"] = self.get_filing_text(

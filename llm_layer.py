@@ -700,7 +700,18 @@ class SECAnalyzer:
                 period = kl.rsplit("_", 1)[-1] if "_" in kl.rsplit("10q", 1)[-1] else ""
                 return f"10-Q {base} ({period})", 2_500
             if "proxy" in kl:
-                return "DEF 14A — EXECUTIVE COMPENSATION", 2_500
+                return "DEF 14A — EXECUTIVE COMPENSATION & GOVERNANCE", 2_500
+            if kl.startswith("sc13_"):
+                # e.g. "sc13_SC13D_2024-10-01"
+                parts = kl.split("_")
+                form  = parts[1].upper() if len(parts) > 1 else "SC 13D/G"
+                dated = parts[2] if len(parts) > 2 else ""
+                return f"{form} — MAJOR SHAREHOLDER FILING ({dated})", 2_000
+            if kl.startswith("offering_"):
+                parts = kl.split("_")
+                form  = parts[1].upper() if len(parts) > 1 else "OFFERING"
+                dated = parts[2] if len(parts) > 2 else ""
+                return f"{form} — EQUITY OFFERING / DILUTION RISK ({dated})", 2_000
             if kl in ANNUAL_KEYS:
                 return f"{k.upper().replace('_', ' ')} (10-K LATEST)", 3_500
             for yr in range(2018, 2028):
@@ -716,7 +727,9 @@ class SECAnalyzer:
             if "10q" in kl:                                              return 2
             if kl.startswith("8k_"):                                     return 3
             if "proxy" in kl:                                            return 4
-            return 5
+            if kl.startswith("sc13_"):                                   return 5
+            if kl.startswith("offering_"):                               return 6
+            return 7
 
         text_parts = []
         for k, v in sections.items():
@@ -748,6 +761,9 @@ REQUIREMENTS:
 1. Discuss every fiscal year FY{earliest}–FY{latest} with specific figures.
 2. red_flags must be non-empty if any metric deteriorated over any 2-year stretch.
 3. Only cite numbers from XBRL DATA or VERIFIED METRICS above.
+4. If the FILINGS list contains NT 10-K or NT 10-Q → flag as late-filing red flag.
+5. If the FILINGS list contains 10-K/A or 10-Q/A → flag as restatement red flag.
+6. If SC 13D or offering sections are present → address activist/dilution implications.
 
 Return a single JSON object with EXACTLY these keys:
 {{
