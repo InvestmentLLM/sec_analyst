@@ -29,6 +29,7 @@ type CompAnalysis = {
   red_flags: string[]; outlook: string; financial_data: FinData; filings_analyzed: Filing[];
   risk_signals?: RiskSignalsData; management_tone?: ToneData;
   company_info?: { name: string; sicDescription?: string; stateOfIncorporation?: string };
+  llm_error?: string;
 };
 type Msg = { role: "user" | "assistant"; text: string };
 
@@ -515,6 +516,33 @@ function HomeInner() {
           const ss = analysis.sub_scores || {} as SubScores;
           return (
             <>
+              {/* LLM error banner — shown when AI analysis failed but metrics still loaded */}
+              {analysis.llm_error && (
+                <div style={{ background: "#1a1200", border: "1px solid #5a4000",
+                  padding: "0.75rem 1.25rem", borderRadius: 8, display: "flex",
+                  alignItems: "flex-start", gap: 10 }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+                  <div>
+                    <p style={{ fontFamily: "monospace", fontSize: 12, color: "#f0c040",
+                      margin: "0 0 4px", fontWeight: "bold" }}>
+                      AI analysis failed — financial data loaded, scores unavailable
+                    </p>
+                    <p style={{ fontFamily: "monospace", fontSize: 11, color: "#997700", margin: 0 }}>
+                      {analysis.llm_error.toLowerCase().includes("rate") || analysis.llm_error.toLowerCase().includes("429")
+                        ? "Groq API rate limit hit. Wait 1–2 minutes then click Analyze again."
+                        : analysis.llm_error.slice(0, 200)}
+                    </p>
+                  </div>
+                  <button onClick={() => runAnalysis(ticker)}
+                    style={{ marginLeft: "auto", flexShrink: 0, background: "#5a4000",
+                      border: "1px solid #8a6000", color: "#f0c040",
+                      padding: "5px 14px", borderRadius: 6, fontSize: 11,
+                      fontFamily: "monospace", cursor: "pointer" }}>
+                    Retry
+                  </button>
+                </div>
+              )}
+
               {/* Row 1: gauge + overview */}
               <div style={{ display: "grid", gridTemplateColumns: "230px 1fr", gap: "1.2rem" }}>
                 <Card title="Investment Rating">

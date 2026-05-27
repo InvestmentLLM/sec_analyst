@@ -22,8 +22,10 @@ def _load_knowledge() -> str:
 
 
 def _build_system_prompt() -> str:
-    knowledge = _load_knowledge()
-    base = (
+    # Keep the system prompt short to stay within Groq's token-per-minute limits.
+    # The knowledge base (27 KB) is intentionally excluded here — including it
+    # pushed each request to ~15 K tokens, reliably hitting the 6 K TPM free-tier cap.
+    return (
         "You are a brutally honest, senior Wall Street equity analyst with 20+ years of experience. "
         "Your job is to protect investors from bad investments, not to sell them on stocks.\n\n"
 
@@ -33,25 +35,21 @@ def _build_system_prompt() -> str:
         "- If a metric is missing, write N/A. Do not fabricate.\n\n"
 
         "ANALYSIS RULES:\n"
-        "- You MUST analyze the FULL multi-year trend, not just the most recent year. "
+        "- Analyze the FULL multi-year trend, not just the most recent year. "
         "A single good year after years of decline is NOT a recovery — call it out.\n"
         "- Always cite the specific fiscal year for every number (e.g. FY2022, FY2023, FY2024).\n"
         "- Look for deteriorating trends: margin compression, slowing growth, rising debt, FCF decline.\n"
-        "- Be skeptical of one-time items, accounting changes, or sudden reversals.\n"
         "- A 'Buy' rating (70+) requires strong evidence across MULTIPLE years — not just the latest.\n"
         "- If trends are mixed or deteriorating, default to 'Hold' (50-69) or lower.\n"
-        "- Red flags must be specific: name the year, the metric, and the direction of change.\n\n"
+        "- Red flags must be specific: name the year, the metric, and the direction.\n\n"
 
-        "SCORING GUIDE (be conservative):\n"
+        "SCORING GUIDE:\n"
         "- 85-100 Strong Buy: consistent multi-year revenue+margin growth, strong FCF, low debt\n"
         "- 70-84 Buy: solid fundamentals with minor concerns, positive trend over 3+ years\n"
         "- 50-69 Hold: mixed signals, flat/slowing growth, margin pressure, or high debt\n"
         "- 30-49 Sell: declining revenue or margins, weak FCF, rising debt load\n"
         "- 0-29 Strong Sell: multiple years of deterioration, existential risks\n"
     )
-    if knowledge:
-        base += f"\n\nANALYSIS KNOWLEDGE BASE:\n{knowledge}"
-    return base
 
 
 class SECAnalyzer:
@@ -626,7 +624,7 @@ class SECAnalyzer:
             if "mda" not in k.lower() or not v:
                 continue
             label = "latest" if k == "mda" else k.rsplit("_", 1)[-1]
-            mda_by_year[label] = v[:3500]
+            mda_by_year[label] = v[:2000]
 
         if len(mda_by_year) < 2:
             return None
@@ -658,7 +656,7 @@ class SECAnalyzer:
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                max_tokens=500,
+                max_tokens=350,
             )
             result = json.loads(resp.choices[0].message.content)
             result["years_analyzed"] = len(mda_by_year)
@@ -697,33 +695,29 @@ class SECAnalyzer:
                 continue
             label = k.upper().replace("_", " ")
             text_parts.append(f"=== {label} ===\n{v[:6000]}")
-        sections_str = "\n\n".join(text_parts[:6])  # up to 6 sections (2 years × 3 sections)
+        sections_str = "\n\n".join(text_parts[:4])  # up to 4 sections to limit tokens
 
         prompt = f"""Analyze {company} ({ticker}) — {industry}.
 
-FILINGS AVAILABLE: {filing_list}
-PRIMARY FILING: {pf_label}
+FILINGS: {filing_list}
+PRIMARY: {pf_label}
 
-PYTHON-COMPUTED YEAR-BY-YEAR TRENDS (mathematically exact — highest priority source):
+PYTHON-COMPUTED YEAR-BY-YEAR TRENDS (ground truth — highest priority):
 {trends_str}
 
 SUMMARY METRICS (FY{earliest}–FY{latest}):
 {metrics_str}
 
-RAW XBRL DATA (secondary reference — if it conflicts with TRENDS above, trust TRENDS):
+RAW XBRL DATA (use if not in TRENDS above):
 {fin_str}
 
-SEC FILING TEXT — MD&A AND RISK FACTORS (qualitative context only):
-{sections_str[:16000]}
+SEC FILING TEXT — qualitative context only, do NOT extract figures from this:
+{sections_str[:8000]}
 
-MANDATORY ANALYSIS REQUIREMENTS:
-1. You MUST explicitly discuss EVERY fiscal year from FY{earliest} to FY{latest} — not just recent years.
-2. Calculate and state year-over-year changes for revenue, margins, and FCF for each year.
-3. Identify if the current year is better or worse than the 3-year average.
-4. Call out any year where a key metric deteriorated — even if the most recent year looks good.
-5. Compare MD&A tone across years if multiple years are provided — management optimism vs actual results.
-6. red_flags must be non-empty if ANY metric deteriorated over ANY 2-year stretch in the data.
-7. Only cite numbers from XBRL DATA or VERIFIED METRICS — never from training knowledge.
+REQUIREMENTS:
+1. Discuss every fiscal year FY{earliest}–FY{latest} with specific figures.
+2. red_flags must be non-empty if any metric deteriorated over any 2-year stretch.
+3. Only cite numbers from XBRL DATA or VERIFIED METRICS above.
 
 Return a single JSON object with EXACTLY these keys:
 {{
@@ -739,16 +733,14 @@ Return a single JSON object with EXACTLY these keys:
     "outlook": <integer 0-15>,
     "risk_profile": <integer 0-10>
   }},
-  "trend_summary": "<Year-by-year breakdown: state the key metric and direction for EACH year FY{earliest}–FY{latest}>",
-  "summary": "<3-4 sentences covering the full multi-year picture. Include at least one concern even for strong companies.>",
-  "justification": "<6-8 paragraphs. Para 1: revenue trend FY{earliest}–FY{latest} with every year's figure. Para 2: margin trajectory. Para 3: balance sheet evolution. Para 4: cash generation trend. Para 5: what MD&A language reveals. Para 6: key risks with specific data. Para 7: what would change the rating up or down.>",
-  "positives": ["<strength with specific year+figure>", "<strength>", "<strength>", "<strength>"],
-  "risks": ["<risk with year+figure>", "<risk>", "<risk>", "<risk>"],
-  "red_flags": ["<specific deteriorating metric with years, e.g. 'Gross margin fell from X% in FY2021 to Y% in FY2023'>"],
-  "outlook": "<2-3 sentences: what the trend implies for the next 12-24 months>"
-}}
-
-Rating: 85-100=Strong Buy, 70-84=Buy, 50-69=Hold, 30-49=Sell, 0-29=Strong Sell."""
+  "trend_summary": "<one sentence per year FY{earliest}–FY{latest}: key metric + direction>",
+  "summary": "<3 sentences: multi-year picture with at least one concern>",
+  "justification": "<4-5 paragraphs: P1=revenue trend with each year's figure, P2=margins, P3=balance sheet+FCF, P4=key risks with data, P5=what would change rating>",
+  "positives": ["<strength with year+figure>", "<strength>", "<strength>"],
+  "risks": ["<risk with year+figure>", "<risk>", "<risk>"],
+  "red_flags": ["<deteriorating metric with years, e.g. gross margin fell X% FY2021→FY2023>"],
+  "outlook": "<2 sentences: trend implication for next 12-24 months>"
+}}"""
 
         try:
             resp = self.client.chat.completions.create(
@@ -759,7 +751,7 @@ Rating: 85-100=Strong Buy, 70-84=Buy, 50-69=Hold, 30-49=Sell, 0-29=Strong Sell."
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                max_tokens=8192,
+                max_tokens=3500,
             )
             result = json.loads(resp.choices[0].message.content)
             result["filings_analyzed"] = filings

@@ -140,6 +140,10 @@ def get_comprehensive(ticker: str, refresh: bool = False):
         # zeros get served from cache for 24 hours on every subsequent request.
         if "error" not in analysis:
             disk_cache.put(cache_key, {**result, "_ask_cache": ask_cache})
+        else:
+            # Propagate the LLM error message to the client so the user
+            # can see exactly what failed (rate limit, JSON parse, etc.)
+            result["llm_error"] = analysis.get("error", "Unknown LLM error")
         return result
 
     except ValueError as e:
