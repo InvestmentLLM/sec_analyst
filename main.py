@@ -127,13 +127,19 @@ def get_comprehensive(ticker: str, refresh: bool = False):
         }
         _comprehensive_cache[t] = ask_cache
 
-        # Build verified_metrics from Python computation — never from LLM
+        # Build verified_metrics from Python computation — never from LLM.
+        # This always works even when the LLM call failed, because computed
+        # is derived directly from XBRL facts in Python.
         analysis["verified_metrics"] = analyzer.display_metrics(computed)
         analysis["financial_data"]   = facts
         analysis["company_info"]     = data.get("company_info", {})
 
         result = {"ticker": t, **analysis}
-        disk_cache.put(cache_key, {**result, "_ask_cache": ask_cache})
+
+        # Only cache successful analyses — never cache LLM errors, otherwise
+        # zeros get served from cache for 24 hours on every subsequent request.
+        if "error" not in analysis:
+            disk_cache.put(cache_key, {**result, "_ask_cache": ask_cache})
         return result
 
     except ValueError as e:

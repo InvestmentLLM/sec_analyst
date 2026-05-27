@@ -759,7 +759,7 @@ Rating: 85-100=Strong Buy, 70-84=Buy, 50-69=Hold, 30-49=Sell, 0-29=Strong Sell."
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                max_tokens=4096,
+                max_tokens=8192,
             )
             result = json.loads(resp.choices[0].message.content)
             result["filings_analyzed"] = filings
@@ -791,7 +791,9 @@ Rating: 85-100=Strong Buy, 70-84=Buy, 50-69=Hold, 30-49=Sell, 0-29=Strong Sell."
 
             return result
         except Exception as e:
-            return {"error": str(e)}
+            # Always preserve _computed so verified_metrics still render
+            # even when the LLM call fails or returns malformed JSON.
+            return {"error": str(e), "_computed": computed}
 
     def analyze_filing(self, text: str, form: str, ticker: str, facts: dict | None = None) -> dict:
         facts_block = self._fmt_facts(facts) if facts else "Not available — use N/A for all financial metrics."
