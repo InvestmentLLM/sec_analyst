@@ -27,13 +27,20 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   const path = request.nextUrl.pathname;
 
-  if (!user && path !== "/login" && !path.startsWith("/auth")) {
+  // Public routes — no auth needed
+  const isPublic =
+    path === "/login" ||
+    path === "/landing" ||
+    path.startsWith("/auth");
+
+  if (!user && !isPublic) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    url.pathname = "/landing";
     return NextResponse.redirect(url);
   }
 
-  if (user && path === "/login") {
+  // Authenticated users don't need to see the landing or login pages
+  if (user && (path === "/login" || path === "/landing")) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
     return NextResponse.redirect(url);

@@ -23,12 +23,12 @@ type InsiderSummary = { total_transactions: number; transactions_90d: number; bu
 type InsiderTx = { date: string; owner: string; title: string; type: "Buy" | "Sell"; shares: number; price: number; value: number; is_director: boolean; is_officer: boolean };
 type CompAnalysis = {
   company_name: string; rating_score: number; rating_verdict: string; confidence: string;
-  sub_scores: SubScores; summary: string; justification: string;
+  sub_scores: SubScores; summary: string; justification: string; trend_summary?: string;
   verified_metrics: Record<string, string>;
   positives: string[]; risks: string[];
   red_flags: string[]; outlook: string; financial_data: FinData; filings_analyzed: Filing[];
-  risk_signals?: RiskSignalsData;
-  management_tone?: ToneData;
+  risk_signals?: RiskSignalsData; management_tone?: ToneData;
+  company_info?: { name: string; sicDescription?: string; stateOfIncorporation?: string };
 };
 type Msg = { role: "user" | "assistant"; text: string };
 
@@ -173,6 +173,91 @@ function RevenueChart({ rev, income }: { rev: DataPoint[]; income: DataPoint[] }
       <circle cx={PAD.l + 66} cy={6} r={4} fill="#22c55e"/>
       <text x={PAD.l + 74} y={10} fontSize={8} fill="#6666aa" fontFamily="monospace">Net Income</text>
     </svg>
+  );
+}
+
+/* ── Margins trend chart ─────────────────────────────────────────── */
+function MarginsChart({ data }: { data: FinData }) {
+  const sort = (k: string) => [...(data[k] || [])].sort((a, b) => a.year - b.year);
+  const rev = sort("revenue"), gp = sort("gross_profit"),
+        op  = sort("operating_income"), ni = sort("net_income");
+  if (rev.length < 2) return null;
+  const revByYr = Object.fromEntries(rev.map(d => [d.year, d.value]));
+  const margins = (series: DataPoint[], key: string) =>
+    series.filter(d => revByYr[d.year]).map(d => ({ year: d.year, value: d.value / revByYr[d.year] * 100, key }));
+  const gpM = margins(gp, "gp"), opM = margins(op, "op"), niM = margins(ni, "ni");
+  const allSeries = [...gpM, ...opM, ...niM];
+  if (allSeries.length < 2) return null;
+  const years = rev.map(d => d.year);
+  const W = 460, H = 140, P = { l: 44, r: 12, t: 22, b: 24 };
+  const iW = W - P.l - P.r, iH = H - P.t - P.b;
+  const vals = allSeries.map(d => d.value);
+  const minV = Math.min(...vals, 0) - 2, maxV = Math.max(...vals, 10) + 2;
+  const range = maxV - minV;
+  const toX = (yr: number) => P.l + ((years.indexOf(yr)) / Math.max(years.length - 1, 1)) * iW;
+  const toY = (v: number) => P.t + iH * (1 - (v - minV) / range);
+  const makePath = (pts: { year: number; value: number }[]) =>
+    pts.length < 2 ? "" : pts.map((p, i) => `${i ? "L" : "M"}${toX(p.year).toFixed(1)},${toY(p.value).toFixed(1)}`).join(" ");
+  const ticks = [0, .33, .67, 1].map(t => minV + range * t);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W, overflow: "visible" }}>
+      {ticks.map((tv, i) => (
+        <g key={i}>
+          <line x1={P.l} y1={toY(tv)} x2={W-P.r} y2={toY(tv)} stroke="#1a1a2e" strokeWidth={.8}/>
+          <text x={P.l-4} y={toY(tv)+3} textAnchor="end" fontSize={8} fill="#44445a" fontFamily="monospace">{tv.toFixed(0)}%</text>
+        </g>
+      ))}
+      {minV < 0 && <line x1={P.l} y1={toY(0)} x2={W-P.r} y2={toY(0)} stroke="#2a2a40" strokeWidth={1.2}/>}
+      {years.map((yr, i) => (
+        <text key={yr} x={toX(yr)} y={H-P.b+13} textAnchor="middle" fontSize={9} fill="#44445a" fontFamily="monospace">
+          {i % 2 === 0 || years.length <= 5 ? yr : ""}
+        </text>
+      ))}
+      {gpM.length > 1 && <path d={makePath(gpM)} fill="none" stroke="#6b7aff" strokeWidth={2} strokeLinejoin="round"/>}
+      {opM.length > 1 && <path d={makePath(opM)} fill="none" stroke="#22c55e" strokeWidth={2} strokeLinejoin="round"/>}
+      {niM.length > 1 && <path d={makePath(niM)} fill="none" stroke="#eab308" strokeWidth={2} strokeLinejoin="round"/>}
+      {gpM.length > 0 && <circle cx={toX(gpM.at(-1)!.year)} cy={toY(gpM.at(-1)!.value)} r={3.5} fill="#6b7aff"/>}
+      {opM.length > 0 && <circle cx={toX(opM.at(-1)!.year)} cy={toY(opM.at(-1)!.value)} r={3.5} fill="#22c55e"/>}
+      {niM.length > 0 && <circle cx={toX(niM.at(-1)!.year)} cy={toY(niM.at(-1)!.value)} r={3.5} fill="#eab308"/>}
+      <circle cx={P.l} cy={P.t-9} r={4} fill="#6b7aff"/>
+      <text x={P.l+9} y={P.t-5} fontSize={8} fill="#6666aa" fontFamily="monospace">Gross Margin</text>
+      <circle cx={P.l+83} cy={P.t-9} r={4} fill="#22c55e"/>
+      <text x={P.l+92} y={P.t-5} fontSize={8} fill="#6666aa" fontFamily="monospace">Operating Margin</text>
+      <circle cx={P.l+181} cy={P.t-9} r={4} fill="#eab308"/>
+      <text x={P.l+190} y={P.t-5} fontSize={8} fill="#6666aa" fontFamily="monospace">Net Margin</text>
+    </svg>
+  );
+}
+
+/* ── Analysis report renderer ────────────────────────────────────── */
+function AnalysisReport({ text }: { text: string }) {
+  if (!text) return null;
+  const paras = text.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {paras.map((para, i) => (
+        <p key={i} style={{ margin: 0, fontSize: 14, lineHeight: 1.9, color: i === 0 ? "#d8d8ee" : "#b0b0cc" }}>
+          {para}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/* ── Bullet list for positives / risks / red flags ───────────────── */
+function BulletList({ items, color, icon }: { items: string[]; color: string; icon: string }) {
+  if (!items?.length) return (
+    <p style={{ fontFamily: "monospace", fontSize: 12, color: "#33334d", fontStyle: "italic" }}>None identified</p>
+  );
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {items.map((item, i) => (
+        <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <span style={{ color, fontSize: 13, flexShrink: 0, marginTop: 1, fontWeight: "bold" }}>{icon}</span>
+          <span style={{ fontSize: 13, color: "#c0c0d8", lineHeight: 1.55 }}>{item}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -482,6 +567,13 @@ function HomeInner() {
                 </Card>
               </div>
 
+              {/* Row 3b: Margin Trends */}
+              {(analysis.financial_data?.revenue?.length ?? 0) >= 2 && (
+                <Card title="Margin Trends · Gross / Operating / Net Margin">
+                  <MarginsChart data={analysis.financial_data}/>
+                </Card>
+              )}
+
               {/* Row 4: Risk Signals */}
               {analysis.risk_signals && (
                 <RiskSignals data={analysis.risk_signals}/>
@@ -494,38 +586,26 @@ function HomeInner() {
 
               {/* Row 6: justification */}
               <Card title="In-Depth Analysis">
-                <p style={{ fontSize: 14, lineHeight: 1.9, color: "#c0c0d8", whiteSpace: "pre-line" }}>
-                  {analysis.justification}
-                </p>
+                {analysis.trend_summary && (
+                  <div style={{ fontSize: 12, fontFamily: "monospace", color: "#6b7aff",
+                    background: "#0a0a1f", padding: "8px 14px", borderRadius: 6,
+                    borderLeft: "3px solid #6b7aff44", marginBottom: 18, lineHeight: 1.65 }}>
+                    {analysis.trend_summary}
+                  </div>
+                )}
+                <AnalysisReport text={analysis.justification}/>
               </Card>
 
               {/* Row 5: positives / risks / red flags */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1.2rem" }}>
                 <Card title="Positives" accent="#22c55e">
-                  <ul style={{ paddingLeft: "1rem", display: "flex", flexDirection: "column", gap: 7 }}>
-                    {(analysis.positives || []).map((p, i) => (
-                      <li key={i} style={{ fontSize: 13, color: "#c0c0d8", lineHeight: 1.5 }}>{p}</li>
-                    ))}
-                  </ul>
+                  <BulletList items={analysis.positives} color="#22c55e" icon="✓"/>
                 </Card>
                 <Card title="Risks" accent="#f97316">
-                  <ul style={{ paddingLeft: "1rem", display: "flex", flexDirection: "column", gap: 7 }}>
-                    {(analysis.risks || []).map((r, i) => (
-                      <li key={i} style={{ fontSize: 13, color: "#c0c0d8", lineHeight: 1.5 }}>{r}</li>
-                    ))}
-                  </ul>
+                  <BulletList items={analysis.risks} color="#f97316" icon="⚠"/>
                 </Card>
                 <Card title="Red Flags" accent="#ef4444">
-                  {!(analysis.red_flags?.length)
-                    ? <p style={{ fontSize: 13, color: "#44445a", fontFamily: "monospace", fontStyle: "italic" }}>
-                        None identified
-                      </p>
-                    : <ul style={{ paddingLeft: "1rem", display: "flex", flexDirection: "column", gap: 7 }}>
-                        {analysis.red_flags.map((r, i) => (
-                          <li key={i} style={{ fontSize: 13, color: "#f08080", lineHeight: 1.5 }}>{r}</li>
-                        ))}
-                      </ul>
-                  }
+                  <BulletList items={analysis.red_flags} color="#ef4444" icon="⛔"/>
                 </Card>
               </div>
 

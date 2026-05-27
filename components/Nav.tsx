@@ -16,7 +16,7 @@ export default function Nav() {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (pathname === "/login") return null;
+  if (pathname === "/login" || pathname === "/landing") return null;
 
   const links = [
     { href: "/dashboard", label: "Dashboard" },
