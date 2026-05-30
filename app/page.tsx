@@ -21,14 +21,49 @@ type RiskSignalsData = {
 type ToneData = { trend: string; trend_score: number; notable_changes: string[]; new_risk_themes: string[]; recurring_strengths: string[]; ai_analysis: string; years_analyzed: number };
 type InsiderSummary = { total_transactions: number; transactions_90d: number; buys_90d: number; sells_90d: number; buy_value_90d: number; sell_value_90d: number; net_value_90d: number; net_sentiment: string };
 type InsiderTx = { date: string; owner: string; title: string; type: "Buy" | "Sell"; shares: number; price: number; value: number; is_director: boolean; is_officer: boolean };
+type MarketData = {
+  ticker: string;
+  price: number | null;
+  change_pct: number | null;
+  market_cap: number | null;
+  enterprise_value: number | null;
+  "52w_high": number | null;
+  "52w_low": number | null;
+  "52w_range_pct": number | null;
+  pe_trailing: number | null;
+  pe_forward: number | null;
+  ev_ebitda: number | null;
+  p_sales: number | null;
+  p_book: number | null;
+  dividend_yield: number | null;
+  beta: number | null;
+  short_pct: number | null;
+  analyst_target_mean: number | null;
+  analyst_target_high: number | null;
+  analyst_target_low: number | null;
+  analyst_recommendation: string | null;
+  analyst_count: number | null;
+  upside_to_target: number | null;
+};
+type ValuationMultiple = { value: number; median: number; verdict: "Cheap" | "Fair" | "Expensive"; vs_median: number };
+type Valuation = {
+  overall: "Cheap" | "Fair Value" | "Expensive" | "Insufficient Data";
+  interpretation: string;
+  multiples: Record<string, ValuationMultiple>;
+  sector_medians: Record<string, number>;
+  sector_used: string;
+};
 type CompAnalysis = {
   company_name: string; rating_score: number; rating_verdict: string; confidence: string;
   sub_scores: SubScores; summary: string; justification: string; trend_summary?: string;
+  investment_thesis?: string;
   verified_metrics: Record<string, string>;
   positives: string[]; risks: string[];
   red_flags: string[]; outlook: string; financial_data: FinData; filings_analyzed: Filing[];
   risk_signals?: RiskSignalsData; management_tone?: ToneData;
   company_info?: { name: string; sicDescription?: string; stateOfIncorporation?: string };
+  market_data?: MarketData;
+  valuation?: Valuation;
   llm_error?: string;
 };
 type Msg = { role: "user" | "assistant"; text: string };
@@ -313,6 +348,167 @@ function VerdictBadge({ verdict, confidence }: { verdict: string; confidence: st
   );
 }
 
+/* ── Valuation Card ─────────────────────────────────────────────── */
+function ValuationCard({ market, valuation }: { market: MarketData; valuation: Valuation }) {
+  const overallColor: Record<string, string> = {
+    "Cheap": "#22c55e", "Fair Value": "#eab308",
+    "Expensive": "#ef4444", "Insufficient Data": "#6666aa",
+  };
+  const oc = overallColor[valuation.overall] ?? "#6666aa";
+
+  const verdictColor = (v: string) =>
+    v === "Cheap" ? "#22c55e" : v === "Fair" ? "#eab308" : "#ef4444";
+
+  const fmtCap = (v: number | null) => {
+    if (!v) return "—";
+    if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
+    if (v >= 1e9)  return `$${(v / 1e9).toFixed(1)}B`;
+    return `$${(v / 1e6).toFixed(0)}M`;
+  };
+
+  const range = market["52w_range_pct"];
+  const rangeCo = range == null ? "#6666aa" : range >= 70 ? "#22c55e" : range >= 30 ? "#eab308" : "#ef4444";
+  const multEntries = Object.entries(valuation.multiples);
+
+  return (
+    <Card title="Market Valuation · Live Price vs. Sector Peers" accent={oc}>
+      {/* ── top stat row ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "auto auto 1fr", gap: "1.4rem 2rem",
+        alignItems: "start", marginBottom: 18, flexWrap: "wrap" }}>
+
+        {/* Price */}
+        <div>
+          <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6666aa",
+            letterSpacing: 1, marginBottom: 3 }}>PRICE</div>
+          <div style={{ fontFamily: "monospace", fontSize: 24, color: "#e8e8f0", fontWeight: "bold",
+            lineHeight: 1 }}>
+            {market.price != null ? `$${market.price.toFixed(2)}` : "—"}
+          </div>
+          {market.change_pct != null && (
+            <div style={{ fontFamily: "monospace", fontSize: 11, marginTop: 4,
+              color: market.change_pct >= 0 ? "#22c55e" : "#ef4444" }}>
+              {market.change_pct >= 0 ? "▲" : "▼"} {Math.abs(market.change_pct).toFixed(2)}%
+            </div>
+          )}
+        </div>
+
+        {/* Market Cap */}
+        <div>
+          <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6666aa",
+            letterSpacing: 1, marginBottom: 3 }}>MARKET CAP</div>
+          <div style={{ fontFamily: "monospace", fontSize: 20, color: "#c0c0d8", fontWeight: "bold",
+            lineHeight: 1 }}>
+            {fmtCap(market.market_cap)}
+          </div>
+          {market.beta != null && (
+            <div style={{ fontFamily: "monospace", fontSize: 10, color: "#44445a", marginTop: 4 }}>
+              β {market.beta.toFixed(2)}
+              {market.dividend_yield ? ` · Div ${market.dividend_yield.toFixed(2)}%` : ""}
+            </div>
+          )}
+        </div>
+
+        {/* 52-week range */}
+        <div>
+          <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6666aa",
+            letterSpacing: 1, marginBottom: 6 }}>
+            52-WEEK RANGE{range != null ? ` · ${range.toFixed(0)}% of range` : ""}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontFamily: "monospace", fontSize: 10, color: "#44445a", whiteSpace: "nowrap" }}>
+              {market["52w_low"] != null ? `$${market["52w_low"].toFixed(0)}` : "—"}
+            </span>
+            <div style={{ flex: 1, height: 8, background: "#1a1a2e", borderRadius: 4,
+              position: "relative", overflow: "hidden" }}>
+              <div style={{
+                position: "absolute", left: 0, top: 0, bottom: 0,
+                width: `${Math.min(Math.max(range ?? 0, 0), 100)}%`,
+                background: rangeCo, borderRadius: 4, transition: "width 0.6s ease",
+              }}/>
+            </div>
+            <span style={{ fontFamily: "monospace", fontSize: 10, color: "#44445a", whiteSpace: "nowrap" }}>
+              {market["52w_high"] != null ? `$${market["52w_high"].toFixed(0)}` : "—"}
+            </span>
+          </div>
+          {market.analyst_target_mean != null && (
+            <div style={{ marginTop: 7, fontFamily: "monospace", fontSize: 11, color: "#8888b0" }}>
+              Analyst target{" "}
+              <span style={{ color: "#c0c0d8" }}>${market.analyst_target_mean}</span>
+              {market.upside_to_target != null && (
+                <span style={{ color: market.upside_to_target >= 0 ? "#22c55e" : "#ef4444",
+                  marginLeft: 5 }}>
+                  ({market.upside_to_target >= 0 ? "+" : ""}{market.upside_to_target.toFixed(1)}%)
+                </span>
+              )}
+              {market.analyst_recommendation && (
+                <span style={{ color: "#6b7aff", marginLeft: 10 }}>
+                  {market.analyst_recommendation}
+                  {market.analyst_count ? ` (${market.analyst_count} analysts)` : ""}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── multiples grid ── */}
+      {multEntries.length > 0 && (
+        <div style={{ display: "grid",
+          gridTemplateColumns: `repeat(${Math.min(multEntries.length, 5)}, 1fr)`,
+          gap: 10, marginBottom: 14 }}>
+          {multEntries.map(([name, m]) => (
+            <div key={name} style={{
+              background: "#0a0a1a",
+              border: `1px solid ${verdictColor(m.verdict)}33`,
+              borderRadius: 8, padding: "10px 12px",
+            }}>
+              <div style={{ fontFamily: "monospace", fontSize: 9, color: "#6666aa",
+                marginBottom: 5, letterSpacing: 0.8 }}>{name}</div>
+              <div style={{ fontFamily: "monospace", fontSize: 17, color: "#e8e8f0",
+                fontWeight: "bold", marginBottom: 2 }}>
+                {m.value.toFixed(1)}×
+              </div>
+              <div style={{ fontFamily: "monospace", fontSize: 9, color: "#44445a",
+                marginBottom: 6 }}>
+                Sector: {m.median}×
+              </div>
+              <span style={{
+                display: "inline-block",
+                background: verdictColor(m.verdict) + "22",
+                border: `1px solid ${verdictColor(m.verdict)}55`,
+                color: verdictColor(m.verdict),
+                fontFamily: "monospace", fontSize: 9, fontWeight: "bold",
+                padding: "2px 7px", borderRadius: 4,
+              }}>
+                {m.verdict}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── overall verdict banner ── */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 14,
+        background: oc + "10", border: `1px solid ${oc}30`,
+        borderRadius: 8, padding: "10px 14px",
+      }}>
+        <span style={{
+          flexShrink: 0,
+          background: oc + "22", border: `1px solid ${oc}`,
+          color: oc, fontFamily: "monospace", fontSize: 12, fontWeight: "bold",
+          padding: "4px 14px", borderRadius: 6,
+        }}>
+          {valuation.overall}
+        </span>
+        <p style={{ margin: 0, fontSize: 13, color: "#b0b0cc", lineHeight: 1.55 }}>
+          {valuation.interpretation}
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 /* ── Main ────────────────────────────────────────────────────────── */
 function HomeInner() {
   const searchParams = useSearchParams();
@@ -561,6 +757,30 @@ function HomeInner() {
                 </Card>
               </div>
 
+              {/* Investment thesis block */}
+              {analysis.investment_thesis && (
+                <div style={{
+                  background: "#0a0f1a",
+                  border: "1px solid #1e3a5f",
+                  borderLeft: "4px solid #6b7aff",
+                  borderRadius: 10,
+                  padding: "1rem 1.4rem",
+                }}>
+                  <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
+                    letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 8 }}>
+                    Investment Thesis
+                  </div>
+                  <p style={{ margin: 0, fontSize: 14, lineHeight: 1.85, color: "#d0d8ff", fontStyle: "italic" }}>
+                    {analysis.investment_thesis}
+                  </p>
+                </div>
+              )}
+
+              {/* Valuation card */}
+              {analysis.market_data && analysis.valuation && (
+                <ValuationCard market={analysis.market_data} valuation={analysis.valuation}/>
+              )}
+
               {/* Row 2: sub-scores */}
               <Card title="Score Breakdown">
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 2.5rem" }}>
@@ -690,18 +910,56 @@ function HomeInner() {
                 </div>
               </Card>
 
-              {/* Filings analyzed (bottom, not in sidebar) */}
+              {/* Filings analyzed — clickable cards */}
               {analysis.filings_analyzed?.length > 0 && (
-                <div style={{ fontFamily: "monospace", fontSize: 11, color: "#33334d",
-                  borderTop: "1px solid #1a1a2e", paddingTop: 12 }}>
-                  Filings analyzed:&nbsp;
-                  {analysis.filings_analyzed.map((f, i) => (
-                    <span key={i} style={{ marginRight: 14 }}>
-                      <span style={{ color: "#44445a" }}>{f.form_type}</span>
-                      <span style={{ color: "#22223a" }}> {f.filed_date}</span>
-                    </span>
-                  ))}
-                </div>
+                <Card title="Filings Analyzed · Click Any Filing for a Deep-Dive Summary">
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {analysis.filings_analyzed.map((f, i) => {
+                      const params = new URLSearchParams({
+                        ticker,
+                        url: f.document_url,
+                        form: f.form_type,
+                        company: analysis.company_name || ticker,
+                      });
+                      const formColor: Record<string, string> = {
+                        "10-K": "#6b7aff", "10-K/A": "#6b7aff",
+                        "10-Q": "#22c55e", "10-Q/A": "#22c55e",
+                        "8-K":  "#eab308", "8-K/A":  "#eab308",
+                        "DEF 14A": "#a78bfa", "DEFA14A": "#a78bfa",
+                        "SC 13D": "#f97316", "SC 13G": "#f97316",
+                        "SC 13D/A": "#f97316", "SC 13G/A": "#f97316",
+                        "S-1": "#ec4899", "S-3": "#ec4899", "424B3": "#ec4899",
+                        "NT 10-K": "#ef4444", "NT 10-Q": "#ef4444",
+                      };
+                      const color = formColor[f.form_type] || "#6666aa";
+                      return (
+                        <a
+                          key={i}
+                          href={`/filing?${params.toString()}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{
+                            display: "flex", flexDirection: "column", gap: 3,
+                            background: color + "11",
+                            border: `1px solid ${color}33`,
+                            borderRadius: 8, padding: "7px 13px",
+                            textDecoration: "none", cursor: "pointer",
+                            transition: "border-color 0.15s",
+                          }}
+                          onMouseEnter={e => (e.currentTarget.style.borderColor = color + "88")}
+                          onMouseLeave={e => (e.currentTarget.style.borderColor = color + "33")}
+                        >
+                          <span style={{ fontFamily: "monospace", fontSize: 12,
+                            fontWeight: "bold", color }}>{f.form_type}</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 10,
+                            color: "#44445a" }}>{f.filed_date}</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 9,
+                            color: color + "99" }}>View analysis →</span>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </Card>
               )}
             </>
           );

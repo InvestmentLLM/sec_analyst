@@ -9,6 +9,10 @@ type CompData = {
   company_name: string; rating_score: number; rating_verdict: string; confidence: string;
   sub_scores: SubScores; summary: string; positives: string[]; risks: string[]; red_flags: string[];
   verified_metrics: Record<string, string>;
+  investment_thesis?: string;
+  justification?: string;
+  trend_summary?: string;
+  outlook?: string;
 };
 type Msg = { role: "user" | "assistant"; text: string };
 
@@ -372,48 +376,129 @@ export default function ComparePage() {
               })}
             </div>
 
-            {/* ── Positives / Risks grid ── */}
+            {/* ── Side-by-Side Analysis ── */}
             {loadedTickers.length >= 2 && (
-              <div style={{ display: "grid", gap: "1rem",
-                gridTemplateColumns: `repeat(${Math.min(loadedTickers.length, 3)}, minmax(0, 1fr))`,
-                marginBottom: "1.5rem" }}>
-                {loadedTickers.map(t => {
-                  const c = companies[t];
-                  return (
-                    <div key={t} style={{ background: "#0d0d17", border: "1px solid #1e1e2e",
-                      borderRadius: 10, padding: "1rem" }}>
-                      <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
-                        letterSpacing: 1, marginBottom: 10, textTransform: "uppercase" }}>
-                        {t} · {c.company_name}
+              <div style={{ background: "#0d0d17", border: "1px solid #1e1e2e",
+                borderRadius: 10, padding: "1.2rem", marginBottom: "1.5rem" }}>
+                <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
+                  letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 16 }}>
+                  Side-by-Side Analysis
+                </div>
+                <div style={{ display: "grid", gap: "1.5rem",
+                  gridTemplateColumns: `repeat(${Math.min(loadedTickers.length, 3)}, minmax(0, 1fr))` }}>
+                  {loadedTickers.map(t => {
+                    const c = companies[t];
+                    const vcolor = VERDICT_COLORS[c.rating_verdict] || "#6b7aff";
+                    const justParas = c.justification?.split(/\n\n+/).filter(Boolean) ?? [];
+                    return (
+                      <div key={t} style={{ display: "flex", flexDirection: "column", gap: 14,
+                        borderRight: loadedTickers.indexOf(t) < loadedTickers.length - 1
+                          ? "1px solid #1e1e2e" : "none",
+                        paddingRight: loadedTickers.indexOf(t) < loadedTickers.length - 1 ? "1.5rem" : 0 }}>
+
+                        {/* Ticker + verdict */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontFamily: "monospace", fontSize: 13,
+                            color: "#6b7aff", fontWeight: "bold", letterSpacing: 0.5 }}>{t}</span>
+                          <span style={{ background: vcolor + "22", border: `1px solid ${vcolor}44`,
+                            color: vcolor, fontFamily: "monospace", fontSize: 10,
+                            padding: "2px 10px", borderRadius: 12 }}>{c.rating_verdict}</span>
+                        </div>
+
+                        {/* Investment thesis */}
+                        {c.investment_thesis && (
+                          <div style={{ background: "#0a0f1a", border: "1px solid #1e3a5f",
+                            borderLeft: `3px solid ${vcolor}`, borderRadius: 8,
+                            padding: "9px 13px" }}>
+                            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.75,
+                              color: "#d0d8ff", fontStyle: "italic" }}>
+                              {c.investment_thesis}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Summary */}
+                        <p style={{ margin: 0, fontSize: 13, lineHeight: 1.75, color: "#c0c0d8" }}>
+                          {c.summary}
+                        </p>
+
+                        {/* Trend summary */}
+                        {c.trend_summary && (
+                          <div style={{ background: "#0a0a1f", borderLeft: "3px solid #6b7aff44",
+                            padding: "8px 12px", borderRadius: 6 }}>
+                            <p style={{ margin: 0, fontSize: 11, fontFamily: "monospace",
+                              color: "#6b7aff", lineHeight: 1.65 }}>{c.trend_summary}</p>
+                          </div>
+                        )}
+
+                        {/* Justification (first 2 paragraphs) */}
+                        {justParas.length > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                            {justParas.slice(0, 2).map((p, i) => (
+                              <p key={i} style={{ margin: 0, fontSize: 12, lineHeight: 1.75,
+                                color: i === 0 ? "#b0b0cc" : "#8888aa" }}>{p}</p>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Positives */}
+                        {c.positives?.length > 0 && (
+                          <div>
+                            <div style={{ fontFamily: "monospace", fontSize: 9, color: "#22c55e",
+                              letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Strengths</div>
+                            {c.positives.slice(0, 3).map((p, i) => (
+                              <div key={i} style={{ display: "flex", gap: 7, marginBottom: 5,
+                                alignItems: "flex-start" }}>
+                                <span style={{ color: "#22c55e", fontSize: 12, flexShrink: 0,
+                                  marginTop: 1 }}>✓</span>
+                                <span style={{ fontSize: 12, color: "#c0c0d8",
+                                  lineHeight: 1.5 }}>{p}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Red flags */}
+                        {c.red_flags?.length > 0 ? (
+                          <div>
+                            <div style={{ fontFamily: "monospace", fontSize: 9, color: "#ef4444",
+                              letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Red Flags</div>
+                            {c.red_flags.slice(0, 2).map((r, i) => (
+                              <div key={i} style={{ display: "flex", gap: 7, marginBottom: 5,
+                                alignItems: "flex-start" }}>
+                                <span style={{ color: "#ef4444", fontSize: 12, flexShrink: 0,
+                                  marginTop: 1 }}>⛔</span>
+                                <span style={{ fontSize: 12, color: "#f08080",
+                                  lineHeight: 1.5 }}>{r}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 11, color: "#33334d", fontFamily: "monospace",
+                            fontStyle: "italic" }}>No red flags identified</div>
+                        )}
+
+                        {/* Outlook */}
+                        {c.outlook && (
+                          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.65,
+                            color: "#6666aa", fontStyle: "italic",
+                            borderTop: "1px solid #1e1e2e", paddingTop: 10 }}>
+                            {c.outlook}
+                          </p>
+                        )}
                       </div>
-                      {c.positives?.slice(0, 3).map((p, i) => (
-                        <div key={i} style={{ fontSize: 12, color: "#22c55e", marginBottom: 5,
-                          display: "flex", gap: 6 }}>
-                          <span>+</span><span style={{ color: "#c0c0d8" }}>{p}</span>
-                        </div>
-                      ))}
-                      {c.red_flags?.slice(0, 2).map((r, i) => (
-                        <div key={i} style={{ fontSize: 12, color: "#ef4444", marginBottom: 5,
-                          marginTop: i === 0 ? 8 : 0, display: "flex", gap: 6 }}>
-                          <span>!</span><span style={{ color: "#f08080" }}>{r}</span>
-                        </div>
-                      ))}
-                      {!c.red_flags?.length && (
-                        <div style={{ fontSize: 11, color: "#33334d", fontFamily: "monospace",
-                          marginTop: 8, fontStyle: "italic" }}>No red flags identified</div>
-                      )}
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             )}
 
-            {/* ── Multi-company AI Chat ── */}
+            {/* ── AI Chat (comparative questions) ── */}
             <div style={{ background: "#0d0d17", border: "1px solid #1e1e2e",
               borderRadius: 10, padding: "1.2rem" }}>
               <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
                 letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 12 }}>
-                Ask AI About All Companies
+                Ask AI a Comparative Question
               </div>
 
               {/* Suggested questions */}

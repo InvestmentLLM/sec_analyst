@@ -204,20 +204,21 @@ class SECFetcher:
             namespace_data = {"us-gaap": us_gaap, "ifrs-full": ifrs}
             # EPS concepts report in USD/shares; everything else must use USD.
             eps_keys = {"eps_basic", "eps_diluted"}
+            # Flow metrics (income-statement / cash-flow) — eligible for TTM.
+            # Balance-sheet metrics (point-in-time) are NOT summed across quarters.
+            ttm_eligible = {
+                "revenue", "net_income", "operating_income", "gross_profit",
+                "operating_cash_flow", "capex", "interest_expense",
+                "depreciation_amortization", "research_development",
+                "sga_expense", "exploration_expense",
+            }
             # Find the earliest period covered by this entity's own 10-K filings.
-            # This excludes predecessor-company comparative years that get tagged
-            # under the successor's CIK (e.g. UTC data in RTX's first 10-K).
             inception_date = self._get_entity_inception_date()
+            self._ttm_latest_end = ""   # reset; _extract_ttm populates this
+            ttm: dict = {}
 
             for key, candidates in metric_map.items():
                 want_per_share = key in eps_keys
-                # merged: period_end → (entry, candidate_priority)
-                # Rules:
-                #   1. Higher-priority candidate (lower index) wins for same period.
-                #      This prevents ProfitLoss from overwriting NetIncomeLoss.
-                #   2. Same-priority candidate filed more recently wins
-                #      (restatement handling within the same concept).
-                #   3. Lower-priority candidate fills in years not yet seen.
                 merged: dict = {}
                 for priority, (ns, name) in enumerate(candidates):
                     src = namespace_data.get(ns, {})
@@ -227,8 +228,6 @@ class SECFetcher:
                     if want_per_share:
                         unit_data = raw_units.get("USD/shares") or raw_units.get("shares") or []
                     else:
-                        # Explicit key check — never fall through to USD/shares
-                        # for dollar-denominated concepts (avoids EPS-scale values).
                         unit_data = raw_units.get("USD") or []
                     for e in unit_data:
                         end = e.get("end", "")
@@ -241,21 +240,84 @@ class SECFetcher:
                         else:
                             ex_entry, ex_priority = existing
                             if priority < ex_priority:
-                                # Higher-priority concept takes over
                                 merged[end] = (e, priority)
                             elif priority == ex_priority and filed > ex_entry.get("filed", ""):
-                                # Same concept, more recent filing (restatement)
                                 merged[end] = (e, priority)
-                            # Lower priority and not a restatement: skip
 
                 if merged:
-                    entries = [e for e, _ in merged.values()]
-                    extracted = self._extract_annual(entries, inception_date=inception_date)
+                    all_entries = [e for e, _ in merged.values()]
+                    extracted = self._extract_annual(all_entries, inception_date=inception_date)
                     if extracted:
                         result[key] = extracted
+                    # TTM for flow metrics
+                    if key in ttm_eligible and not want_per_share:
+                        ttm_val = self._extract_ttm(all_entries)
+                        if ttm_val is not None:
+                            ttm[key] = round(ttm_val)
+
+            if ttm:
+                result["_ttm"] = ttm
+                if self._ttm_latest_end:
+                    result["_ttm_through"] = self._ttm_latest_end
             return result
         except Exception as e:
             return {"error": str(e)}
+
+    # ── TTM (Trailing Twelve Months) from quarterly XBRL data ────────
+
+    def _extract_ttm(self, entries: list) -> float | None:
+        """
+        Compute TTM value by summing the 4 most recent non-overlapping
+        quarterly entries (75–105 day periods from 10-Q filings).
+        Only meaningful for flow metrics — do NOT call for balance-sheet items.
+        Returns None if fewer than 4 clean quarterly periods are available.
+        """
+        def period_days(e) -> int:
+            s, en = e.get("start", ""), e.get("end", "")
+            if s and en:
+                try:
+                    return (date.fromisoformat(en) - date.fromisoformat(s)).days
+                except Exception:
+                    pass
+            return -1
+
+        quarterly_forms = {"10-Q", "10-Q/A", "6-K"}
+
+        candidates = [e for e in entries if e.get("start") and 75 <= period_days(e) <= 105]
+        form_only  = [e for e in candidates if e.get("form") in quarterly_forms]
+        pool       = form_only if form_only else candidates
+        if not pool:
+            return None
+
+        # Dedup by end date; keep most-recently-filed version (restatements)
+        by_end: dict = {}
+        for e in pool:
+            end = e.get("end", "")
+            if not end:
+                continue
+            if end not in by_end or e.get("filed", "") > by_end[end].get("filed", ""):
+                by_end[end] = e
+
+        # Sort newest-first; pick 4 non-overlapping quarters
+        sorted_q = sorted(by_end.values(), key=lambda e: e.get("end", ""), reverse=True)
+        selected, prev_start = [], None
+        for e in sorted_q:
+            if prev_start is None or e.get("end", "") <= prev_start:
+                selected.append(e)
+                prev_start = e.get("start", "")
+            if len(selected) == 4:
+                break
+
+        if len(selected) < 4:
+            return None
+        try:
+            total = sum(float(e.get("val", 0)) for e in selected)
+            # Store the period end of the most recent quarter so callers know
+            # how fresh the TTM is.
+            self._ttm_latest_end = selected[0].get("end", "")
+            return total
+        except Exception:
+            return None
 
     def _extract_annual(self, entries: list, years: int = 8, inception_date: str = "") -> list:
         """
@@ -347,29 +409,34 @@ class SECFetcher:
     def get_recent_filings(self, form_types=None, count: int = 2):
         if form_types is None:
             form_types = self.FUNDAMENTAL_FORMS
-        cik = self.get_cik()
+        if not self._submissions:
+            self.get_company_info()
+        cik_int = int(self.get_cik())
+        recent      = self._submissions.get("filings", {}).get("recent", {})
+        forms       = recent.get("form", [])
+        accessions  = recent.get("accessionNumber", [])
+        filed_dates = recent.get("filingDate", [])
+        form_types_set = set(form_types)
+        per_form: dict = {ft: 0 for ft in form_types}
         all_filings = []
-        for form in form_types:
-            url = (f"{self.BASE_URL}/cgi-bin/browse-edgar?"
-                   f"action=getcompany&CIK={cik}&type={form}&owner=exclude&count={count * 2}")
-            resp = self._get(url)
-            soup = BeautifulSoup(resp.text, "lxml")
-            table = soup.find("table", class_="tableFile2")
-            if not table:
+        for i, form in enumerate(forms):
+            if form not in form_types_set:
                 continue
-            for row in table.find_all("tr")[1:count + 1]:
-                cols = row.find_all("td")
-                if len(cols) < 4:
-                    continue
-                link = cols[1].find("a")
-                if not link or "Archives" not in link.get("href", ""):
-                    continue
-                all_filings.append({
-                    "form_type": cols[0].text.strip(),
-                    "filed_date": cols[3].text.strip(),
-                    "accession_number": link["href"].split("/")[-2],
-                    "document_url": self.BASE_URL + link["href"],
-                })
+            if per_form.get(form, 0) >= count:
+                continue
+            acc   = accessions[i]  if i < len(accessions)  else ""
+            filed = filed_dates[i] if i < len(filed_dates) else ""
+            if not acc:
+                continue
+            acc_clean = acc.replace("-", "")
+            all_filings.append({
+                "form_type":        form,
+                "filed_date":       filed,
+                "accession_number": acc_clean,
+                "document_url":     (f"{self.BASE_URL}/Archives/edgar/data/"
+                                     f"{cik_int}/{acc_clean}/{acc}-index.htm"),
+            })
+            per_form[form] = per_form.get(form, 0) + 1
         return all_filings
 
     def get_filing_text(self, document_url: str, max_chars: int = 100_000) -> str:

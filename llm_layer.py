@@ -5,6 +5,290 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+# ── Sector frameworks ────────────────────────────────────────────────────────
+# Each entry drives: (a) what metrics to emphasise, (b) what valuation
+# multiples apply, (c) what the LLM should watch for, and (d) how scoring
+# weights should shift from the generic defaults.
+
+SECTOR_FRAMEWORKS: dict[str, dict] = {
+    "energy": {
+        "name": "Energy / Oil & Gas",
+        "key_metrics": "EBITDAX, Debt/EBITDAX, FCF yield, CapEx/Revenue, reserve replacement",
+        "valuation": (
+            "EV/EBITDAX (E&P comps trade 4-8x; integrated majors 5-9x). "
+            "FCF yield on enterprise value. Price/NAV for reserve-rich names. "
+            "Do NOT use EV/Revenue or P/S — commodity revenue swings with price, not volume."
+        ),
+        "scoring_notes": (
+            "FCF and balance sheet matter more than revenue growth in cyclical commodity businesses. "
+            "Debt/EBITDAX above 3x is a yellow flag; above 4x is a red flag. "
+            "EBITDAX margin compression during a commodity upcycle is a serious warning sign. "
+            "A company with rising production but falling FCF is spending itself into trouble."
+        ),
+        "red_flags": (
+            "Debt/EBITDAX above 3x, negative FCF during commodity price upswings, "
+            "CapEx consistently exceeding operating cash flow, exploration write-downs, "
+            "reserve life index below 7 years."
+        ),
+    },
+    "banks": {
+        "name": "Banking / Financial Services",
+        "key_metrics": "Net Interest Margin (NIM), Efficiency Ratio, ROE, Tier 1 Capital, Book Value/share",
+        "valuation": (
+            "Price/Book (P/B): quality banks at 1.5-2.5x; median at 1-1.5x. "
+            "P/E on normalised earnings. Dividend yield. "
+            "Standard operating margin and FCF are MEANINGLESS for banks — do not use them."
+        ),
+        "scoring_notes": (
+            "ROE above 12% consistently is excellent; below 8% is poor. "
+            "NIM compression from rate environment is a structural headwind. "
+            "Efficiency ratio below 55% is well-run; above 65% signals cost bloat. "
+            "Rising provision for credit losses is an early warning of deteriorating loan quality."
+        ),
+        "red_flags": (
+            "NIM compressing more than 20 bps in a rising rate environment, "
+            "NPL ratio rising above 1%, CET1 ratio below 10%, "
+            "loan growth far outpacing deposit growth (funding risk), "
+            "efficiency ratio deteriorating year-over-year."
+        ),
+    },
+    "reit": {
+        "name": "Real Estate Investment Trust (REIT)",
+        "key_metrics": "FFO/share, AFFO/share, Dividend yield, Debt/EBITDA, Occupancy rate",
+        "valuation": (
+            "P/FFO (quality REITs 16-22x; value names 10-15x). "
+            "P/AFFO (stricter; adjust for recurring CapEx). "
+            "NAV premium/discount. Dividend yield relative to 10-yr Treasury. "
+            "Net income is DISTORTED by real estate depreciation — always prefer FFO/AFFO."
+        ),
+        "scoring_notes": (
+            "AFFO payout ratio above 90% leaves no room for reinvestment or a cushion. "
+            "Debt/EBITDA above 7x is aggressive for a REIT; below 5x is conservative. "
+            "Same-property NOI growth is the cleanest organic growth indicator. "
+            "Lease expiry schedule and tenant concentration are existential risk factors."
+        ),
+        "red_flags": (
+            "AFFO payout ratio above 100% (dividend not covered), "
+            "occupancy declining more than 2pp year-over-year, "
+            "debt/EBITDA above 7x, heavy floating-rate debt exposure, "
+            "anchor tenant departures or major lease non-renewals."
+        ),
+    },
+    "tech": {
+        "name": "Technology / Software",
+        "key_metrics": "Revenue growth rate, Gross margin, Rule of 40 (growth% + FCF margin%), Operating leverage",
+        "valuation": (
+            "EV/Revenue for high-growth (>30%/yr) pre-profit names. "
+            "EV/EBITDA for profitable software (20-35x for best-in-class). "
+            "P/FCF for mature cash generators. Rule of 40 ≥ 40 is the quality threshold. "
+            "Hardware/semiconductor names trade at lower multiples than pure software."
+        ),
+        "scoring_notes": (
+            "Gross margin below 60% for software is a structural concern — check if it's hardware mix. "
+            "Revenue growth decelerating from >30% to <15% in two years is a major de-rating trigger. "
+            "Positive and growing FCF margin matters more than GAAP profitability for SaaS. "
+            "High R&D as % of revenue is GOOD for tech — it's investment, not waste."
+        ),
+        "red_flags": (
+            "Revenue growth decelerating sharply without margin expansion to compensate, "
+            "gross margin below 50% for pure software, "
+            "negative FCF with no identifiable path to profitability, "
+            "customer concentration above 20% in a single account, "
+            "rising SG&A as % of revenue (loss of operating leverage)."
+        ),
+    },
+    "healthcare": {
+        "name": "Healthcare / Pharmaceuticals / Biotech",
+        "key_metrics": "R&D/Revenue ratio, Gross margin, Revenue concentration by drug/product, Pipeline coverage",
+        "valuation": (
+            "EV/EBITDA for large-cap pharma (8-14x). "
+            "P/E on 'cash EPS' (add back amortisation of acquired IP). "
+            "Sum-of-parts DCF on patent-protected revenues for diversified portfolios. "
+            "For pre-revenue biotech: cash runway, probability-adjusted pipeline NPV."
+        ),
+        "scoring_notes": (
+            "A single drug generating >40% of revenue is binary risk — patent cliff or generic threat changes everything. "
+            "R&D declining as % of revenue in big pharma signals pipeline neglect. "
+            "Gross margin above 70% is normal for branded pharmaceuticals. "
+            "FDA approval timelines and competitive approvals in the same indication are key catalysts."
+        ),
+        "red_flags": (
+            "Revenue from top product >50% of total with patent expiry within 5 years, "
+            "R&D/revenue ratio declining below 12% for an innovative pharma company, "
+            "clinical trial failures in lead pipeline programmes, "
+            "generic competition entering a key market, going-concern language in a biotech."
+        ),
+    },
+    "retail": {
+        "name": "Retail / Consumer Discretionary",
+        "key_metrics": "Same-store (comp) sales growth, Gross margin, Inventory turnover, EBITDA margin",
+        "valuation": (
+            "EV/EBITDA (4-10x for physical retail; 12-20x for dominant omnichannel). "
+            "P/E normalised for lease accounting (IFRS 16 / ASC 842 distorts EBITDA). "
+            "EV/Sales for pre-profitable growth retail."
+        ),
+        "scoring_notes": (
+            "Comp sales growth is the single most important metric — aggregate revenue can grow via new stores while the core business deteriorates. "
+            "Gross margin below 30% for non-grocery retail is a structural weakness. "
+            "Inventory building faster than revenue growth signals demand slowdown or poor buying decisions. "
+            "E-commerce penetration and digital growth rate are forward-looking quality signals."
+        ),
+        "red_flags": (
+            "Negative comp sales for two or more consecutive quarters, "
+            "inventory/revenue ratio rising above historical norms, "
+            "gross margin compressing >200 bps in a single year, "
+            "store closure announcements, "
+            "heavy debt load with cyclical revenue exposure."
+        ),
+    },
+    "industrials": {
+        "name": "Industrials / Manufacturing / Defense",
+        "key_metrics": "Operating margin, EBITDA margin, Order backlog, Book-to-bill ratio, CapEx/Revenue",
+        "valuation": (
+            "EV/EBITDA (7-13x for quality industrials). "
+            "P/E. EV/EBIT for asset-light sub-sectors. "
+            "Backlog/Revenue multiple as a forward visibility indicator."
+        ),
+        "scoring_notes": (
+            "Backlog growth above revenue growth signals accelerating demand — a leading indicator. "
+            "Operating leverage is the key quality test: margin should expand as revenue grows. "
+            "CapEx intensity (CapEx/Revenue) is sector-normal at 3-6%; above 10% requires justification. "
+            "Defense contractors have government contract visibility; cyclical industrials are macro-sensitive."
+        ),
+        "red_flags": (
+            "Backlog declining faster than revenue (demand deterioration), "
+            "margin compression on volume growth (pricing or cost problem), "
+            "working capital building significantly (receivables or inventory), "
+            "rising debt with CapEx that doesn't grow capacity."
+        ),
+    },
+    "utilities": {
+        "name": "Utilities",
+        "key_metrics": "Dividend yield, Regulated ROE, Rate base growth, Debt/EBITDA, Payout ratio",
+        "valuation": (
+            "P/E (15-20x for regulated utilities in stable rate environments). "
+            "EV/EBITDA (8-12x). "
+            "Dividend yield relative to 10-yr Treasury (spread typically 100-200 bps for regulated names). "
+            "Rate base multiple (enterprise value as a multiple of regulated rate base)."
+        ),
+        "scoring_notes": (
+            "Rate base growth is the engine of earnings growth in regulated utilities. "
+            "Dividend sustainability: payout ratio below 75% of regulated earnings provides a cushion. "
+            "Debt/EBITDA above 6x is aggressive; utilities carry more debt than most sectors by design. "
+            "Unregulated segments introduce commodity and volume risk — size matters."
+        ),
+        "red_flags": (
+            "Dividend payout ratio exceeding 80% without rate base growth, "
+            "debt/EBITDA above 6.5x, "
+            "regulatory rate cases with adverse outcomes, "
+            "large unregulated segment underperforming, "
+            "deteriorating credit ratings approaching investment-grade floor."
+        ),
+    },
+    "general": {
+        "name": "General / Diversified",
+        "key_metrics": "Revenue growth, Operating margin, FCF margin, Debt/Equity, ROIC",
+        "valuation": (
+            "EV/EBITDA (sector-dependent but 8-15x is a reasonable starting range). "
+            "P/E on normalised earnings. FCF yield. EV/Revenue for pre-profit names."
+        ),
+        "scoring_notes": (
+            "ROIC above WACC consistently is the single best indicator of a quality business. "
+            "FCF conversion (FCF/net income) above 80% indicates high earnings quality. "
+            "Revenue growth with stable or improving margins is the clearest positive signal."
+        ),
+        "red_flags": (
+            "FCF consistently below reported net income (earnings quality concern), "
+            "rising debt without commensurate asset or cash flow growth, "
+            "revenue growth driven entirely by price (volume declining), "
+            "multiple restatements or auditor changes."
+        ),
+    },
+}
+
+
+def _detect_sector(sic: str, sic_desc: str) -> dict:
+    """
+    Map SIC code + description to the appropriate sector framework.
+    SIC codes take precedence; description keywords are the fallback.
+    """
+    try:
+        sic_num = int(sic) if sic and str(sic).strip().isdigit() else 0
+    except Exception:
+        sic_num = 0
+    desc = (sic_desc or "").lower()
+
+    # Energy / Oil & Gas
+    if (1000 <= sic_num <= 1499
+            or sic_num in {2911, 2990, 4922, 4923, 4924, 4925, 4941, 5171, 5172}
+            or any(k in desc for k in [
+                "petroleum", "natural gas", "oil", "crude", "drilling",
+                "refin", "pipeline", "coal", "mining", "extraction",
+            ])):
+        return SECTOR_FRAMEWORKS["energy"]
+
+    # Banks / Financial
+    if (6000 <= sic_num <= 6199
+            or any(k in desc for k in [
+                "bank", "savings institution", "credit union",
+                "mortgage", "thrift", "federal reserve",
+            ])):
+        return SECTOR_FRAMEWORKS["banks"]
+
+    # REITs
+    if (sic_num == 6798
+            or 6500 <= sic_num <= 6552
+            or any(k in desc for k in ["real estate", "reit", "real property"])):
+        return SECTOR_FRAMEWORKS["reit"]
+
+    # Tech / Software / Semiconductors
+    if (3674 <= sic_num <= 3674          # semiconductors
+            or 7370 <= sic_num <= 7379   # computer services / software
+            or any(k in desc for k in [
+                "software", "semiconductor", "computer", "internet",
+                "electronic data", "prepackaged", "cloud", "cybersecurity",
+            ])):
+        return SECTOR_FRAMEWORKS["tech"]
+
+    # Healthcare / Pharma / Biotech
+    if (2833 <= sic_num <= 2836
+            or 3841 <= sic_num <= 3842
+            or 8000 <= sic_num <= 8099
+            or any(k in desc for k in [
+                "pharmaceutical", "drug", "biotech", "biologics",
+                "medical device", "hospital", "health service", "clinical",
+            ])):
+        return SECTOR_FRAMEWORKS["healthcare"]
+
+    # Utilities
+    if (4900 <= sic_num <= 4939
+            or any(k in desc for k in [
+                "electric service", "gas distribution", "water supply",
+                "utility", "power generation",
+            ])):
+        return SECTOR_FRAMEWORKS["utilities"]
+
+    # Retail / Consumer
+    if (5200 <= sic_num <= 5999
+            or any(k in desc for k in [
+                "retail", "department store", "grocery", "apparel",
+                "restaurant", "food service", "specialty store",
+            ])):
+        return SECTOR_FRAMEWORKS["retail"]
+
+    # Industrials / Aerospace / Defense
+    if (3400 <= sic_num <= 3599
+            or 3710 <= sic_num <= 3720
+            or 3760 <= sic_num <= 3769   # guided missiles / defense
+            or any(k in desc for k in [
+                "aerospace", "defense", "machinery", "manufacturing",
+                "industrial", "construction equipment", "fabricated metal",
+            ])):
+        return SECTOR_FRAMEWORKS["industrials"]
+
+    return SECTOR_FRAMEWORKS["general"]
+
+
 def _load_knowledge() -> str:
     """Load every .md and .txt file from the knowledge/ directory."""
     knowledge_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge")
@@ -95,6 +379,7 @@ class SECAnalyzer:
             "current_liabilities": "Current Liabilities",
             "research_development":"R&D Expense",
         }
+        fv = self._fv
         lines = []
         for key, label in labels.items():
             if key in facts and isinstance(facts[key], list) and facts[key]:
@@ -105,6 +390,17 @@ class SECAnalyzer:
                     elif abs(v) >= 1e6:    pts.append(f"FY{y}: ${v/1e6:.1f}M")
                     else:                  pts.append(f"FY{y}: {v:.2f}")
                 lines.append(f"{label}: {' | '.join(pts)}")
+
+        # Append TTM block — most current data available
+        ttm = facts.get("_ttm", {})
+        ttm_through = facts.get("_ttm_through", "")
+        if ttm:
+            through_label = f" (through {ttm_through})" if ttm_through else ""
+            lines.append(f"\n=== TTM — TRAILING TWELVE MONTHS{through_label} (most current) ===")
+            for k, v in ttm.items():
+                label = labels.get(k, k.replace("_", " ").title())
+                lines.append(f"  {label} TTM: {fv(v)}")
+
         return "\n".join(lines) or "No structured XBRL data available."
 
     def display_metrics(self, computed: dict) -> dict:
@@ -157,6 +453,19 @@ class SECAnalyzer:
         years = computed.get("data_years")
         if years and len(years) > 1:
             out["Years of Data"] = f"{years[0]}–{years[-1]}"
+        # TTM metrics
+        ttm_thru = computed.get("ttm_through", "")
+        ttm_label = f" TTM ({ttm_thru[:7]})" if ttm_thru else " TTM"
+        if "revenue_ttm" in computed:
+            out[f"Revenue{ttm_label}"] = self._fv(computed["revenue_ttm"])
+        if "net_margin_ttm" in computed:
+            out[f"Net Margin{ttm_label}"] = f"{computed['net_margin_ttm']:.1f}%"
+        if "operating_margin_ttm" in computed:
+            out[f"Op Margin{ttm_label}"] = f"{computed['operating_margin_ttm']:.1f}%"
+        if "gross_margin_ttm" in computed:
+            out[f"Gross Margin{ttm_label}"] = f"{computed['gross_margin_ttm']:.1f}%"
+        if "fcf_margin_ttm" in computed:
+            out[f"FCF Margin{ttm_label}"] = f"{computed['fcf_margin_ttm']:.1f}%"
         return out
 
     def _compute_metrics(self, facts: dict) -> dict:
@@ -281,6 +590,33 @@ class SECAnalyzer:
                 op_aligned = by_yr_op2[yr_ie]
                 if ie_aligned and ie_aligned != 0:
                     m["interest_coverage"] = round(op_aligned / abs(ie_aligned), 1)
+
+        # ── TTM overlay — supersede annual where quarterly is more current ──
+        ttm      = facts.get("_ttm", {})
+        ttm_thru = facts.get("_ttm_through", "")
+        if ttm:
+            m["ttm_available"] = True
+            m["ttm_through"]   = ttm_thru
+            # TTM revenue — replace annual revenue_latest if TTM is newer
+            if "revenue" in ttm:
+                ttm_rev = ttm["revenue"]
+                m["revenue_ttm"] = ttm_rev
+                # TTM growth vs last full-year revenue
+                if r:
+                    m["revenue_growth_ttm"] = round((ttm_rev - r) / abs(r) * 100, 1) if r else None
+            # TTM income → TTM net margin
+            if "net_income" in ttm and "revenue" in ttm and ttm["revenue"]:
+                m["net_margin_ttm"] = round(ttm["net_income"] / ttm["revenue"] * 100, 1)
+            if "operating_income" in ttm and "revenue" in ttm and ttm["revenue"]:
+                m["operating_margin_ttm"] = round(ttm["operating_income"] / ttm["revenue"] * 100, 1)
+            if "gross_profit" in ttm and "revenue" in ttm and ttm["revenue"]:
+                m["gross_margin_ttm"] = round(ttm["gross_profit"] / ttm["revenue"] * 100, 1)
+            # TTM FCF
+            if "operating_cash_flow" in ttm and "capex" in ttm:
+                ttm_fcf = ttm["operating_cash_flow"] - abs(ttm["capex"])
+                m["free_cash_flow_ttm"] = ttm_fcf
+                if "revenue" in ttm and ttm["revenue"]:
+                    m["fcf_margin_ttm"] = round(ttm_fcf / ttm["revenue"] * 100, 1)
 
         return {k: v for k, v in m.items() if v is not None}
 
@@ -408,12 +744,12 @@ class SECAnalyzer:
         fv = self._fv
         lines = [
             f"Data covers fiscal years: {computed.get('data_years', 'unknown')}",
-            f"Latest Revenue: {fv(computed.get('revenue_latest'))} (FY{computed.get('revenue_year','?')})",
+            f"Latest Annual Revenue: {fv(computed.get('revenue_latest'))} (FY{computed.get('revenue_year','?')})",
             f"Revenue Growth YoY: {computed.get('revenue_growth_yoy', 'N/A')}%",
             f"Revenue 3-yr CAGR: {computed.get('revenue_cagr_3yr', 'N/A')}%",
-            f"Net Margin: {computed.get('net_margin', 'N/A')}%",
-            f"Operating Margin: {computed.get('operating_margin', 'N/A')}%",
-            f"Gross Margin: {computed.get('gross_margin', 'N/A')}%",
+            f"Net Margin (annual): {computed.get('net_margin', 'N/A')}%",
+            f"Operating Margin (annual): {computed.get('operating_margin', 'N/A')}%",
+            f"Gross Margin (annual): {computed.get('gross_margin', 'N/A')}%",
             f"Debt/Equity: {computed.get('debt_to_equity', 'N/A')}",
             f"Current Ratio: {computed.get('current_ratio', 'N/A')}",
             f"Return on Equity: {computed.get('roe', 'N/A')}%",
@@ -422,7 +758,30 @@ class SECAnalyzer:
             f"EPS Growth YoY: {computed.get('eps_growth_yoy', 'N/A')}%",
             f"Latest EPS: {computed.get('eps_latest', 'N/A')}",
         ]
-        return "\n".join(l for l in lines if "N/A" not in l or "Data covers" in l)
+        base = "\n".join(l for l in lines if "N/A" not in l or "Data covers" in l)
+
+        # TTM block — appears prominently so LLM treats it as the most current data
+        ttm_thru = computed.get("ttm_through", "")
+        ttm_lines = []
+        if computed.get("ttm_available"):
+            through = f" (most recent quarter ending {ttm_thru})" if ttm_thru else ""
+            ttm_lines.append(f"\nTTM METRICS — TRAILING TWELVE MONTHS{through}:")
+            if "revenue_ttm" in computed:
+                ttm_lines.append(f"  Revenue TTM: {fv(computed['revenue_ttm'])}")
+            if "revenue_growth_ttm" in computed:
+                ttm_lines.append(f"  Revenue TTM vs Last Annual: {computed['revenue_growth_ttm']:+.1f}%")
+            if "net_margin_ttm" in computed:
+                ttm_lines.append(f"  Net Margin TTM: {computed['net_margin_ttm']:.1f}%")
+            if "operating_margin_ttm" in computed:
+                ttm_lines.append(f"  Operating Margin TTM: {computed['operating_margin_ttm']:.1f}%")
+            if "gross_margin_ttm" in computed:
+                ttm_lines.append(f"  Gross Margin TTM: {computed['gross_margin_ttm']:.1f}%")
+            if "fcf_margin_ttm" in computed:
+                ttm_lines.append(f"  FCF Margin TTM: {computed['fcf_margin_ttm']:.1f}%")
+            if "free_cash_flow_ttm" in computed:
+                ttm_lines.append(f"  Free Cash Flow TTM: {fv(computed['free_cash_flow_ttm'])}")
+
+        return base + "\n".join(ttm_lines)
 
     # ── risk models ──────────────────────────────────────────────────
 
@@ -670,10 +1029,12 @@ class SECAnalyzer:
         info     = data.get("company_info", {})
         company  = info.get("name", ticker)
         industry = info.get("sicDescription", "")
+        sic      = str(info.get("sic", ""))
         facts    = data.get("financial_facts", {})
         sections = data.get("filing_sections", {})
         filings  = data.get("filings", [])
         pf       = data.get("primary_filing", {})
+        sector   = _detect_sector(sic, industry)
 
         computed     = self._compute_metrics(facts)
         fin_str      = self._fmt_facts(facts)
@@ -740,7 +1101,20 @@ class SECAnalyzer:
         text_parts.sort(key=lambda x: x[0])
         sections_str = "\n\n".join(t for _, t in text_parts[:8])
 
+        ttm_thru   = facts.get("_ttm_through", "")
+        ttm_notice = (f"NOTE: TTM data is available through {ttm_thru} — "
+                      "prefer TTM figures over annual for current-state assessment."
+                      if ttm_thru else "")
+
         prompt = f"""Analyze {company} ({ticker}) — {industry}.
+
+SECTOR: {sector['name']}
+SECTOR-APPROPRIATE VALUATION: {sector['valuation']}
+SECTOR SCORING NOTES: {sector['scoring_notes']}
+SECTOR RED FLAGS TO WATCH: {sector['red_flags']}
+KEY METRICS FOR THIS SECTOR: {sector['key_metrics']}
+
+{ttm_notice}
 
 FILINGS: {filing_list}
 PRIMARY: {pf_label}
@@ -748,7 +1122,7 @@ PRIMARY: {pf_label}
 PYTHON-COMPUTED YEAR-BY-YEAR TRENDS (ground truth — highest priority):
 {trends_str}
 
-SUMMARY METRICS (FY{earliest}–FY{latest}):
+SUMMARY METRICS (FY{earliest}–FY{latest}, including TTM where available):
 {metrics_str}
 
 RAW XBRL DATA (use if not in TRENDS above):
@@ -758,12 +1132,14 @@ SEC FILING TEXT (10-K annual, 10-Q quarterly, 8-K events, DEF 14A proxy — qual
 {sections_str[:8000]}
 
 REQUIREMENTS:
-1. Discuss every fiscal year FY{earliest}–FY{latest} with specific figures.
-2. red_flags must be non-empty if any metric deteriorated over any 2-year stretch.
-3. Only cite numbers from XBRL DATA or VERIFIED METRICS above.
-4. If the FILINGS list contains NT 10-K or NT 10-Q → flag as late-filing red flag.
-5. If the FILINGS list contains 10-K/A or 10-Q/A → flag as restatement red flag.
-6. If SC 13D or offering sections are present → address activist/dilution implications.
+1. Discuss every fiscal year FY{earliest}–FY{latest} with specific figures. If TTM is available, also comment on the TTM trend vs the last full year.
+2. Apply SECTOR-APPROPRIATE valuation and metrics from the SECTOR block above — not generic P/E if this is an energy or bank name.
+3. red_flags must be non-empty if any metric deteriorated over any 2-year stretch.
+4. Only cite numbers from XBRL DATA or VERIFIED METRICS above.
+5. If the FILINGS list contains NT 10-K or NT 10-Q → flag as late-filing red flag.
+6. If the FILINGS list contains 10-K/A or 10-Q/A → flag as restatement red flag.
+7. If SC 13D or offering sections are present → address activist/dilution implications.
+8. Write like an investor writing for investors — tell the story of this business, not just a list of numbers. Explain WHY the numbers moved the way they did.
 
 Return a single JSON object with EXACTLY these keys:
 {{
@@ -779,13 +1155,14 @@ Return a single JSON object with EXACTLY these keys:
     "outlook": <integer 0-15>,
     "risk_profile": <integer 0-10>
   }},
-  "trend_summary": "<one sentence per year FY{earliest}–FY{latest}: key metric + direction>",
-  "summary": "<3 sentences: multi-year picture with at least one concern>",
-  "justification": "<4-5 paragraphs: P1=revenue trend with each year's figure, P2=margins, P3=balance sheet+FCF, P4=key risks with data, P5=what would change rating>",
+  "investment_thesis": "<2-3 sentences: the core reason to own or avoid this stock — state the thesis plainly (e.g. 'X is a dominant franchise with durable pricing power and accelerating FCF — the case for owning it is straightforward' OR 'X is a structurally declining business burning cash — avoid until management demonstrates a credible path to profitability'). Ground every claim in the multi-year data.>",
+  "trend_summary": "<one sentence per year FY{earliest}–FY{latest}: key metric + direction, e.g. 'FY2021: revenue $Xbn, margins expanding; FY2022: ...'>",
+  "summary": "<3 sentences: (1) what this business does, what market it serves, and what drives its revenue; (2) the multi-year financial trajectory in plain English with the most important number — e.g. revenue grew from $X in FY{earliest} to $X in FY{latest} but net margin compressed from X% to X%; (3) the single most important thing an investor deciding whether to buy today must understand>",
+  "justification": "<4-5 paragraphs telling the investment story: P1=narrate what drove this business across FY{earliest}–FY{latest} — what tailwinds or headwinds shaped performance, cite revenue and income each year; P2=financial quality — are the margins genuine and expanding or being squeezed, does FCF confirm reported earnings, does the debt load threaten or amplify the thesis; P3=competitive position — why do customers choose this company over alternatives, what is the moat (brand, switching costs, network effects, cost advantage), and what threatens it; P4=the honest bull case vs. the bear case — what specific things must go right for the bull case to play out, and what realistic scenario justifies selling; P5=what concrete triggers — specific metric thresholds, product cycles, macro events — would upgrade or downgrade this rating>",
   "positives": ["<strength with year+figure>", "<strength>", "<strength>"],
   "risks": ["<risk with year+figure>", "<risk>", "<risk>"],
   "red_flags": ["<deteriorating metric with years, e.g. gross margin fell X% FY2021→FY2023>"],
-  "outlook": "<2 sentences: trend implication for next 12-24 months>"
+  "outlook": "<2 sentences: what the trend trajectory — not just the last data point — implies for this business over the next 12-24 months, and what a meaningful inflection would look like>"
 }}"""
 
         try:
@@ -802,6 +1179,7 @@ Return a single JSON object with EXACTLY these keys:
             result = json.loads(resp.choices[0].message.content)
             result["filings_analyzed"] = filings
             result["_computed"]        = computed
+            result["sector_framework"] = sector["name"]
 
             # ── Altman Z-Score + Beneish M-Score (pure math, no LLM for numbers) ──
             altman  = self._compute_altman_z(facts)
@@ -843,9 +1221,20 @@ Return a single JSON object with EXACTLY these keys:
             + (f"VERIFIED COMPUTED METRICS:\n{computed_block}\n\n" if computed_block else "")
             + "QUALITATIVE FILING TEXT (context only — do NOT extract financial figures from this):\n"
             f"{text[:18000]}\n\n"
-            "Return JSON with keys: summary, key_metrics, risks, outlook, red_flags.\n"
-            "key_metrics must come exclusively from the XBRL DATA block above. "
-            "If a metric has no XBRL entry, write \"N/A\"."
+            "Return JSON with EXACTLY these keys:\n"
+            "  filing_summary: 2-3 sentences — what this specific filing reveals about the business and "
+            "  why it matters to an investor (not just what type of form it is).\n"
+            "  key_findings: list of 3-5 bullet strings — the most important factual disclosures or "
+            "  data points in this filing, each written as a complete sentence.\n"
+            "  key_metrics: dict of metric_name:value — from XBRL DATA only; use N/A if not available.\n"
+            "  risks: list of 2-4 specific risks explicitly disclosed or implied by this filing.\n"
+            "  outlook: 2 sentences — what this filing tells investors about the near-term trajectory "
+            "  and whether the business is on track, accelerating, or deteriorating.\n"
+            "  red_flags: list of any warning signs found (late filing, restatements, going-concern "
+            "  language, auditor changes, material weaknesses, sudden revenue/margin step-downs).\n"
+            "  investment_implication: 1-2 sentences — net impact of this filing on the investment "
+            "  thesis: is it a positive, negative, or neutral datapoint and why?\n"
+            "key_metrics values must come exclusively from the XBRL DATA block above."
         )
         try:
             resp = self.client.chat.completions.create(

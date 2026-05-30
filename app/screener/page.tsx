@@ -1,255 +1,174 @@
 "use client";
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { addToWatchlist } from "../../lib/watchlist";
+import { authHeader } from "../../lib/supabase";
 
-const SECTORS: Record<string, { color: string; stocks: { ticker: string; name: string }[] }> = {
-  "Technology": {
-    color: "#6b7aff",
-    stocks: [
-      { ticker: "AAPL",  name: "Apple Inc."              },
-      { ticker: "MSFT",  name: "Microsoft Corp."         },
-      { ticker: "NVDA",  name: "NVIDIA Corp."            },
-      { ticker: "GOOGL", name: "Alphabet Inc."           },
-      { ticker: "META",  name: "Meta Platforms Inc."     },
-      { ticker: "AVGO",  name: "Broadcom Inc."           },
-      { ticker: "AMD",   name: "Advanced Micro Devices"  },
-      { ticker: "INTC",  name: "Intel Corp."             },
-      { ticker: "ORCL",  name: "Oracle Corp."            },
-      { ticker: "CRM",   name: "Salesforce Inc."         },
-      { ticker: "ADBE",  name: "Adobe Inc."              },
-      { ticker: "CSCO",  name: "Cisco Systems"           },
-      { ticker: "QCOM",  name: "QUALCOMM Inc."           },
-      { ticker: "TXN",   name: "Texas Instruments"       },
-      { ticker: "AMAT",  name: "Applied Materials"       },
-      { ticker: "MU",    name: "Micron Technology"       },
-    ],
-  },
-  "Healthcare": {
-    color: "#22c55e",
-    stocks: [
-      { ticker: "UNH",   name: "UnitedHealth Group"      },
-      { ticker: "LLY",   name: "Eli Lilly and Co."       },
-      { ticker: "JNJ",   name: "Johnson & Johnson"       },
-      { ticker: "ABBV",  name: "AbbVie Inc."             },
-      { ticker: "MRK",   name: "Merck & Co."             },
-      { ticker: "PFE",   name: "Pfizer Inc."             },
-      { ticker: "TMO",   name: "Thermo Fisher Scientific"},
-      { ticker: "ABT",   name: "Abbott Laboratories"     },
-      { ticker: "DHR",   name: "Danaher Corp."           },
-      { ticker: "BMY",   name: "Bristol-Myers Squibb"    },
-      { ticker: "AMGN",  name: "Amgen Inc."              },
-      { ticker: "ISRG",  name: "Intuitive Surgical"      },
-      { ticker: "SYK",   name: "Stryker Corp."           },
-      { ticker: "REGN",  name: "Regeneron Pharmaceuticals"},
-      { ticker: "VRTX",  name: "Vertex Pharmaceuticals"  },
-    ],
-  },
-  "Financials": {
-    color: "#eab308",
-    stocks: [
-      { ticker: "JPM",   name: "JPMorgan Chase"          },
-      { ticker: "V",     name: "Visa Inc."               },
-      { ticker: "MA",    name: "Mastercard Inc."         },
-      { ticker: "BAC",   name: "Bank of America"         },
-      { ticker: "WFC",   name: "Wells Fargo"             },
-      { ticker: "GS",    name: "Goldman Sachs"           },
-      { ticker: "MS",    name: "Morgan Stanley"          },
-      { ticker: "AXP",   name: "American Express"        },
-      { ticker: "BLK",   name: "BlackRock Inc."          },
-      { ticker: "SPGI",  name: "S&P Global Inc."         },
-      { ticker: "C",     name: "Citigroup Inc."          },
-      { ticker: "CB",    name: "Chubb Ltd."              },
-      { ticker: "PNC",   name: "PNC Financial Services"  },
-      { ticker: "SCHW",  name: "Charles Schwab Corp."    },
-      { ticker: "ICE",   name: "Intercontinental Exchange"},
-    ],
-  },
-  "Energy": {
-    color: "#f97316",
-    stocks: [
-      { ticker: "XOM",   name: "Exxon Mobil Corp."       },
-      { ticker: "CVX",   name: "Chevron Corp."           },
-      { ticker: "COP",   name: "ConocoPhillips"          },
-      { ticker: "EOG",   name: "EOG Resources"           },
-      { ticker: "SLB",   name: "SLB (Schlumberger)"      },
-      { ticker: "MPC",   name: "Marathon Petroleum"      },
-      { ticker: "PSX",   name: "Phillips 66"             },
-      { ticker: "VLO",   name: "Valero Energy"           },
-      { ticker: "OXY",   name: "Occidental Petroleum"    },
-      { ticker: "DVN",   name: "Devon Energy"            },
-      { ticker: "HAL",   name: "Halliburton Co."         },
-      { ticker: "BKR",   name: "Baker Hughes"            },
-    ],
-  },
-  "Consumer Discretionary": {
-    color: "#ec4899",
-    stocks: [
-      { ticker: "AMZN",  name: "Amazon.com Inc."         },
-      { ticker: "TSLA",  name: "Tesla Inc."              },
-      { ticker: "HD",    name: "Home Depot Inc."         },
-      { ticker: "MCD",   name: "McDonald's Corp."        },
-      { ticker: "NKE",   name: "Nike Inc."               },
-      { ticker: "SBUX",  name: "Starbucks Corp."         },
-      { ticker: "TJX",   name: "TJX Companies"           },
-      { ticker: "LOW",   name: "Lowe's Companies"        },
-      { ticker: "CMG",   name: "Chipotle Mexican Grill"  },
-      { ticker: "GM",    name: "General Motors"          },
-      { ticker: "BKNG",  name: "Booking Holdings"        },
-      { ticker: "RCL",   name: "Royal Caribbean Group"   },
-      { ticker: "MAR",   name: "Marriott International"  },
-    ],
-  },
-  "Consumer Staples": {
-    color: "#10b981",
-    stocks: [
-      { ticker: "WMT",   name: "Walmart Inc."            },
-      { ticker: "COST",  name: "Costco Wholesale"        },
-      { ticker: "PG",    name: "Procter & Gamble"        },
-      { ticker: "KO",    name: "Coca-Cola Co."           },
-      { ticker: "PEP",   name: "PepsiCo Inc."            },
-      { ticker: "PM",    name: "Philip Morris Intl."     },
-      { ticker: "MO",    name: "Altria Group"            },
-      { ticker: "MDLZ",  name: "Mondelez International"  },
-      { ticker: "CL",    name: "Colgate-Palmolive"       },
-      { ticker: "GIS",   name: "General Mills"           },
-    ],
-  },
-  "Industrials": {
-    color: "#64748b",
-    stocks: [
-      { ticker: "GE",    name: "GE Aerospace"            },
-      { ticker: "CAT",   name: "Caterpillar Inc."        },
-      { ticker: "UNP",   name: "Union Pacific Corp."     },
-      { ticker: "HON",   name: "Honeywell Intl."         },
-      { ticker: "RTX",   name: "RTX Corp."               },
-      { ticker: "BA",    name: "Boeing Co."              },
-      { ticker: "LMT",   name: "Lockheed Martin"         },
-      { ticker: "DE",    name: "Deere & Co."             },
-      { ticker: "UPS",   name: "United Parcel Service"   },
-      { ticker: "FDX",   name: "FedEx Corp."             },
-      { ticker: "WM",    name: "Waste Management"        },
-      { ticker: "EMR",   name: "Emerson Electric"        },
-      { ticker: "GD",    name: "General Dynamics"        },
-      { ticker: "NOC",   name: "Northrop Grumman"        },
-    ],
-  },
-  "Communication Services": {
-    color: "#8b5cf6",
-    stocks: [
-      { ticker: "GOOGL", name: "Alphabet Inc."           },
-      { ticker: "META",  name: "Meta Platforms Inc."     },
-      { ticker: "NFLX",  name: "Netflix Inc."            },
-      { ticker: "DIS",   name: "Walt Disney Co."         },
-      { ticker: "CMCSA", name: "Comcast Corp."           },
-      { ticker: "T",     name: "AT&T Inc."               },
-      { ticker: "VZ",    name: "Verizon Communications"  },
-      { ticker: "TMUS",  name: "T-Mobile US"             },
-      { ticker: "CHTR",  name: "Charter Communications"  },
-    ],
-  },
-  "Materials": {
-    color: "#f59e0b",
-    stocks: [
-      { ticker: "LIN",   name: "Linde PLC"               },
-      { ticker: "APD",   name: "Air Products"            },
-      { ticker: "SHW",   name: "Sherwin-Williams"        },
-      { ticker: "FCX",   name: "Freeport-McMoRan"        },
-      { ticker: "NEM",   name: "Newmont Corp."           },
-      { ticker: "NUE",   name: "Nucor Corp."             },
-      { ticker: "DOW",   name: "Dow Inc."                },
-      { ticker: "DD",    name: "DuPont de Nemours"       },
-      { ticker: "ECL",   name: "Ecolab Inc."             },
-      { ticker: "PPG",   name: "PPG Industries"          },
-    ],
-  },
-  "Utilities": {
-    color: "#06b6d4",
-    stocks: [
-      { ticker: "NEE",   name: "NextEra Energy"          },
-      { ticker: "SO",    name: "Southern Company"        },
-      { ticker: "DUK",   name: "Duke Energy"             },
-      { ticker: "SRE",   name: "Sempra"                  },
-      { ticker: "AEP",   name: "American Electric Power" },
-      { ticker: "EXC",   name: "Exelon Corp."            },
-      { ticker: "XEL",   name: "Xcel Energy"             },
-      { ticker: "D",     name: "Dominion Energy"         },
-      { ticker: "WEC",   name: "WEC Energy Group"        },
-    ],
-  },
-  "Real Estate": {
-    color: "#84cc16",
-    stocks: [
-      { ticker: "PLD",   name: "Prologis Inc."           },
-      { ticker: "AMT",   name: "American Tower"          },
-      { ticker: "EQIX",  name: "Equinix Inc."            },
-      { ticker: "CCI",   name: "Crown Castle Inc."       },
-      { ticker: "PSA",   name: "Public Storage"          },
-      { ticker: "SPG",   name: "Simon Property Group"    },
-      { ticker: "O",     name: "Realty Income Corp."     },
-      { ticker: "DLR",   name: "Digital Realty Trust"    },
-      { ticker: "AVB",   name: "AvalonBay Communities"   },
-      { ticker: "WY",    name: "Weyerhaeuser Co."        },
-    ],
-  },
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+const SECTORS: Record<string, { color: string }> = {
+  "Technology":              { color: "#6b7aff" },
+  "Healthcare":              { color: "#22c55e" },
+  "Financials":              { color: "#eab308" },
+  "Energy":                  { color: "#f97316" },
+  "Consumer Discretionary":  { color: "#ec4899" },
+  "Consumer Staples":        { color: "#10b981" },
+  "Industrials":             { color: "#64748b" },
+  "Communication Services":  { color: "#8b5cf6" },
+  "Materials":               { color: "#f59e0b" },
+  "Utilities":               { color: "#06b6d4" },
+  "Real Estate":             { color: "#84cc16" },
 };
+
+type MarketData = {
+  ticker: string; price?: number; change_pct?: number; market_cap?: number;
+  pe_trailing?: number; pe_forward?: number; ev_ebitda?: number;
+  p_sales?: number; dividend_yield?: number; "52w_range_pct"?: number;
+  analyst_recommendation?: string; upside_to_target?: number;
+  analyst_target_mean?: number; error?: string;
+};
+
+type StockRow = {
+  ticker: string; name: string;
+  market: MarketData;
+  rating?: { score: number; verdict: string } | null;
+};
+
+type SortKey = "ticker" | "price" | "change_pct" | "market_cap" | "pe_trailing" | "ev_ebitda" | "score";
+
+const VERDICT_COLORS: Record<string, string> = {
+  "Strong Buy": "#22c55e", "Buy": "#84cc16",
+  "Hold": "#eab308", "Sell": "#f97316", "Strong Sell": "#ef4444",
+};
+
+function fmt(v: number | undefined | null, prefix = "", suffix = "", decimals = 1): string {
+  if (v == null) return "—";
+  if (prefix === "$" && Math.abs(v) >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
+  if (prefix === "$" && Math.abs(v) >= 1e9)  return `$${(v / 1e9).toFixed(1)}B`;
+  if (prefix === "$" && Math.abs(v) >= 1e6)  return `$${(v / 1e6).toFixed(1)}M`;
+  return `${prefix}${v.toFixed(decimals)}${suffix}`;
+}
+
+function RangeBar({ pct }: { pct?: number | null }) {
+  if (pct == null) return <span style={{ color: "#33334d", fontSize: 10 }}>—</span>;
+  const c = pct < 30 ? "#ef4444" : pct < 70 ? "#eab308" : "#22c55e";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+      <div style={{ width: 54, height: 5, background: "#1e1e2e", borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: c, borderRadius: 3 }} />
+      </div>
+      <span style={{ fontSize: 10, fontFamily: "monospace", color: "#6666aa" }}>{pct.toFixed(0)}%</span>
+    </div>
+  );
+}
 
 function ScreenerInner() {
   const searchParams  = useSearchParams();
   const router        = useRouter();
-  const initialSector = searchParams.get("sector") ?? "Technology";
-  const [activeSector, setActiveSector]   = useState(initialSector);
-  const [saved,        setSaved]          = useState<Set<string>>(new Set());
-  const [savingTicker, setSavingTicker]   = useState<string | null>(null);
-  const [search,       setSearch]         = useState("");
+  const initSector    = searchParams.get("sector") ?? "Technology";
 
-  const sectorKeys   = Object.keys(SECTORS);
-  const sectorData   = SECTORS[activeSector] ?? SECTORS["Technology"];
-  const accentColor  = sectorData.color;
+  const [activeSector, setActiveSector] = useState(initSector);
+  const [stocks,       setStocks]       = useState<StockRow[]>([]);
+  const [loading,      setLoading]      = useState(false);
+  const [saved,        setSaved]        = useState<Set<string>>(new Set());
+  const [search,       setSearch]       = useState("");
+  const [sortKey,      setSortKey]      = useState<SortKey>("market_cap");
+  const [sortAsc,      setSortAsc]      = useState(false);
 
-  const filteredStocks = sectorData.stocks.filter(s =>
+  const loadSector = useCallback(async (sector: string) => {
+    setLoading(true);
+    setStocks([]);
+    try {
+      const res  = await fetch(`${API}/screener/${encodeURIComponent(sector)}`,
+        { headers: await authHeader() });
+      const data = await res.json();
+      setStocks(data.stocks ?? []);
+    } catch {
+      setStocks([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSector(activeSector); }, [activeSector, loadSector]);
+
+  async function handleWatch(ticker: string, name: string) {
+    try {
+      await addToWatchlist(ticker, name);
+      setSaved(prev => new Set(prev).add(ticker));
+    } catch { /* table not set up */ }
+  }
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortAsc(a => !a);
+    else { setSortKey(key); setSortAsc(false); }
+  }
+
+  const color = SECTORS[activeSector]?.color ?? "#6b7aff";
+
+  const filtered = stocks.filter(s =>
     s.ticker.toLowerCase().includes(search.toLowerCase()) ||
     s.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  async function handleWatch(ticker: string, name: string) {
-    setSavingTicker(ticker);
-    try {
-      await addToWatchlist(ticker, name);
-      setSaved(prev => new Set(prev).add(ticker));
-    } catch {
-      /* table may not exist yet */
-    }
-    setSavingTicker(null);
+  const sorted = [...filtered].sort((a, b) => {
+    let av: number | null = null, bv: number | null = null;
+    if (sortKey === "ticker")      { return sortAsc ? a.ticker.localeCompare(b.ticker) : b.ticker.localeCompare(a.ticker); }
+    if (sortKey === "price")       { av = a.market?.price ?? null;       bv = b.market?.price ?? null; }
+    if (sortKey === "change_pct")  { av = a.market?.change_pct ?? null;  bv = b.market?.change_pct ?? null; }
+    if (sortKey === "market_cap")  { av = a.market?.market_cap ?? null;  bv = b.market?.market_cap ?? null; }
+    if (sortKey === "pe_trailing") { av = a.market?.pe_trailing ?? null; bv = b.market?.pe_trailing ?? null; }
+    if (sortKey === "ev_ebitda")   { av = a.market?.ev_ebitda ?? null;   bv = b.market?.ev_ebitda ?? null; }
+    if (sortKey === "score")       { av = a.rating?.score ?? null;       bv = b.rating?.score ?? null; }
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return sortAsc ? av - bv : bv - av;
+  });
+
+  function SortHeader({ label, k, align = "right" }: { label: string; k: SortKey; align?: string }) {
+    const active = sortKey === k;
+    return (
+      <span onClick={() => toggleSort(k)} style={{
+        cursor: "pointer", userSelect: "none",
+        color: active ? color : "#44445a",
+        display: "flex", alignItems: "center",
+        justifyContent: align === "right" ? "flex-end" : "flex-start", gap: 3,
+      }}>
+        {label}
+        {active && <span style={{ fontSize: 8 }}>{sortAsc ? "▲" : "▼"}</span>}
+      </span>
+    );
   }
+
+  const totalStocks = Object.values(SECTORS).length;  // placeholder
 
   return (
     <main style={{ minHeight: "100vh", background: "#0a0a0f", color: "#e8e8f0" }}>
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "1.5rem" }}>
+      <div style={{ maxWidth: 1300, margin: "0 auto", padding: "1.5rem" }}>
 
-        {/* Page header */}
-        <div style={{ marginBottom: "1.5rem" }}>
+        {/* Header */}
+        <div style={{ marginBottom: "1.4rem" }}>
           <h1 style={{ fontSize: 20, color: "#e8e8f0", marginBottom: 4, fontFamily: "Georgia, serif" }}>
             Stock Screener
           </h1>
           <p style={{ fontFamily: "monospace", fontSize: 11, color: "#44445a" }}>
-            {Object.values(SECTORS).reduce((n, s) => n + s.stocks.length, 0)} companies across {sectorKeys.length} sectors — click Analyze for full SEC filing analysis
+            Live prices · AI ratings · Sector valuation — click any row to run full SEC analysis
           </p>
         </div>
 
         {/* Sector tabs */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: "1.5rem" }}>
-          {sectorKeys.map(sector => {
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: "1.2rem" }}>
+          {Object.entries(SECTORS).map(([sector, { color: c }]) => {
             const active = sector === activeSector;
-            const color  = SECTORS[sector].color;
             return (
               <button key={sector}
                 onClick={() => { setActiveSector(sector); setSearch(""); }}
                 style={{
                   padding: "5px 13px", borderRadius: 20,
-                  background: active ? color + "22" : "transparent",
-                  border: `1px solid ${active ? color : "#2a2a3e"}`,
-                  color: active ? color : "#6666aa",
+                  background: active ? c + "22" : "transparent",
+                  border: `1px solid ${active ? c : "#2a2a3e"}`,
+                  color: active ? c : "#6666aa",
                   fontFamily: "monospace", fontSize: 11, cursor: "pointer",
                 }}>
                 {sector}
@@ -258,93 +177,223 @@ function ScreenerInner() {
           })}
         </div>
 
-        {/* Search within sector */}
-        <div style={{ marginBottom: "1rem" }}>
+        {/* Search + refresh */}
+        <div style={{ display: "flex", gap: 10, marginBottom: "1rem", alignItems: "center" }}>
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder={`Search within ${activeSector}…`}
+            placeholder={`Search ${activeSector}…`}
             style={{
               background: "#13131f", border: "1px solid #2a2a3e",
               color: "#e8e8f0", padding: "7px 12px", borderRadius: 7,
-              fontSize: 13, fontFamily: "monospace", outline: "none", width: 280,
+              fontSize: 13, fontFamily: "monospace", outline: "none", width: 240,
             }}
           />
+          <button onClick={() => loadSector(activeSector)} style={{
+            background: "transparent", border: "1px solid #2a2a3e",
+            color: "#6666aa", padding: "6px 14px", borderRadius: 7,
+            fontFamily: "monospace", fontSize: 11, cursor: "pointer",
+          }}>↻ Refresh</button>
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: "#33334d", marginLeft: "auto" }}>
+            Prices update every hour · AI ratings from last analysis run
+          </span>
         </div>
 
-        {/* Stock grid */}
-        <div style={{
-          background: "#0d0d17", border: `1px solid #1e1e2e`,
-          borderTop: `3px solid ${accentColor}`,
-          borderRadius: 10, overflow: "hidden",
-        }}>
+        {/* Table */}
+        <div style={{ background: "#0d0d17", border: "1px solid #1e1e2e",
+          borderTop: `3px solid ${color}`, borderRadius: 10, overflow: "hidden" }}>
+
           {/* Column headers */}
           <div style={{
-            display: "grid", gridTemplateColumns: "90px 1fr 120px 120px",
-            padding: "8px 16px", borderBottom: "1px solid #1a1a2e",
+            display: "grid",
+            gridTemplateColumns: "84px 1fr 90px 80px 100px 72px 72px 80px 90px 110px 130px",
+            padding: "9px 16px", background: "#13131f",
+            borderBottom: "1px solid #1e1e2e",
             fontFamily: "monospace", fontSize: 10, color: "#44445a",
-            letterSpacing: 1, textTransform: "uppercase",
+            letterSpacing: 0.8, textTransform: "uppercase",
           }}>
-            <span>Ticker</span>
+            <SortHeader label="Ticker"    k="ticker"      align="left" />
             <span>Company</span>
-            <span style={{ textAlign: "right" }}>Watchlist</span>
-            <span style={{ textAlign: "right" }}>Analyze</span>
+            <SortHeader label="Price"     k="price" />
+            <SortHeader label="Chg %"     k="change_pct" />
+            <SortHeader label="Mkt Cap"   k="market_cap" />
+            <SortHeader label="P/E"       k="pe_trailing" />
+            <SortHeader label="EV/EBITDA" k="ev_ebitda" />
+            <span style={{ textAlign: "right" }}>52w Range</span>
+            <SortHeader label="AI Score"  k="score" />
+            <span style={{ textAlign: "right" }}>Analyst Target</span>
+            <span style={{ textAlign: "right" }}>Actions</span>
           </div>
 
-          {filteredStocks.map((stock, i) => (
-            <div key={stock.ticker} style={{
-              display: "grid", gridTemplateColumns: "90px 1fr 120px 120px",
-              padding: "11px 16px", alignItems: "center",
-              borderBottom: i < filteredStocks.length - 1 ? "1px solid #13131f" : "none",
-              background: i % 2 === 0 ? "transparent" : "#0a0a14",
+          {/* Loading skeleton */}
+          {loading && Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} style={{
+              display: "grid",
+              gridTemplateColumns: "84px 1fr 90px 80px 100px 72px 72px 80px 90px 110px 130px",
+              padding: "12px 16px", borderBottom: "1px solid #13131f",
+              background: i % 2 === 0 ? "#0d0d17" : "#0b0b15",
             }}>
-              <span style={{ fontFamily: "monospace", fontSize: 14, color: accentColor, fontWeight: "bold" }}>
-                {stock.ticker}
-              </span>
-              <span style={{ fontFamily: "monospace", fontSize: 12, color: "#c0c0d8" }}>
-                {stock.name}
-              </span>
-              <div style={{ textAlign: "right" }}>
-                <button
-                  onClick={() => handleWatch(stock.ticker, stock.name)}
-                  disabled={savingTicker === stock.ticker}
-                  style={{
-                    background: saved.has(stock.ticker) ? "#22c55e22" : "transparent",
-                    border: `1px solid ${saved.has(stock.ticker) ? "#22c55e44" : "#2a2a3e"}`,
-                    color: saved.has(stock.ticker) ? "#22c55e" : "#6666aa",
-                    padding: "4px 10px", borderRadius: 5,
-                    fontSize: 11, fontFamily: "monospace", cursor: "pointer",
-                  }}>
-                  {saved.has(stock.ticker) ? "✓ Saved" : savingTicker === stock.ticker ? "…" : "+ Watch"}
-                </button>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <button
-                  onClick={() => router.push(`/?ticker=${stock.ticker}`)}
-                  style={{
-                    background: "#6b7aff22", border: "1px solid #6b7aff44",
-                    color: "#6b7aff", padding: "4px 12px", borderRadius: 5,
-                    fontSize: 11, fontFamily: "monospace", cursor: "pointer",
-                  }}>
-                  Analyze →
-                </button>
-              </div>
+              {Array.from({ length: 11 }).map((_, j) => (
+                <div key={j} style={{
+                  height: 12, borderRadius: 4,
+                  background: "#1a1a2e",
+                  width: j === 1 ? "70%" : "60%",
+                  animation: "pulse 1.5s ease-in-out infinite",
+                }} />
+              ))}
             </div>
           ))}
 
-          {filteredStocks.length === 0 && (
-            <div style={{ padding: "2rem", textAlign: "center",
+          {/* Rows */}
+          {!loading && sorted.map((stock, i) => {
+            const m = stock.market;
+            const chgColor = (m.change_pct ?? 0) >= 0 ? "#22c55e" : "#ef4444";
+            const vcolor = stock.rating ? (VERDICT_COLORS[stock.rating.verdict] ?? "#6b7aff") : null;
+            return (
+              <div key={stock.ticker}
+                onClick={() => router.push(`/?ticker=${stock.ticker}`)}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "84px 1fr 90px 80px 100px 72px 72px 80px 90px 110px 130px",
+                  padding: "11px 16px", alignItems: "center",
+                  borderBottom: i < sorted.length - 1 ? "1px solid #13131f" : "none",
+                  background: i % 2 === 0 ? "#0d0d17" : "#0b0b15",
+                  cursor: "pointer", transition: "background 0.1s",
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#141428")}
+                onMouseLeave={e => (e.currentTarget.style.background = i % 2 === 0 ? "#0d0d17" : "#0b0b15")}
+              >
+                {/* Ticker */}
+                <span style={{ fontFamily: "monospace", fontSize: 13,
+                  color, fontWeight: "bold" }}>{stock.ticker}</span>
+
+                {/* Name */}
+                <span style={{ fontFamily: "monospace", fontSize: 11, color: "#8888b0",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  paddingRight: 8 }}>
+                  {stock.name}
+                </span>
+
+                {/* Price */}
+                <span style={{ fontFamily: "monospace", fontSize: 12,
+                  color: "#e8e8f0", textAlign: "right" }}>
+                  {fmt(m.price, "$", "", 2)}
+                </span>
+
+                {/* Change % */}
+                <span style={{ fontFamily: "monospace", fontSize: 11,
+                  color: chgColor, textAlign: "right" }}>
+                  {m.change_pct != null
+                    ? `${m.change_pct >= 0 ? "+" : ""}${m.change_pct.toFixed(2)}%`
+                    : "—"}
+                </span>
+
+                {/* Market cap */}
+                <span style={{ fontFamily: "monospace", fontSize: 11,
+                  color: "#8888b0", textAlign: "right" }}>
+                  {fmt(m.market_cap, "$")}
+                </span>
+
+                {/* P/E */}
+                <span style={{ fontFamily: "monospace", fontSize: 11,
+                  color: "#c0c0d8", textAlign: "right" }}>
+                  {fmt(m.pe_trailing, "", "x", 1)}
+                </span>
+
+                {/* EV/EBITDA */}
+                <span style={{ fontFamily: "monospace", fontSize: 11,
+                  color: "#c0c0d8", textAlign: "right" }}>
+                  {fmt(m.ev_ebitda, "", "x", 1)}
+                </span>
+
+                {/* 52w range bar */}
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <RangeBar pct={m["52w_range_pct"]} />
+                </div>
+
+                {/* AI Score */}
+                <div style={{ textAlign: "right" }}>
+                  {stock.rating ? (
+                    <span style={{
+                      background: (vcolor ?? "#6b7aff") + "22",
+                      border: `1px solid ${(vcolor ?? "#6b7aff")}44`,
+                      color: vcolor ?? "#6b7aff",
+                      fontFamily: "monospace", fontSize: 10,
+                      padding: "2px 8px", borderRadius: 10,
+                    }}>
+                      {stock.rating.score} · {stock.rating.verdict}
+                    </span>
+                  ) : (
+                    <span style={{ fontFamily: "monospace", fontSize: 10,
+                      color: "#2a2a3e" }}>not analyzed</span>
+                  )}
+                </div>
+
+                {/* Analyst target */}
+                <div style={{ textAlign: "right" }}>
+                  {m.analyst_target_mean ? (
+                    <div>
+                      <div style={{ fontFamily: "monospace", fontSize: 11, color: "#c0c0d8" }}>
+                        {fmt(m.analyst_target_mean, "$", "", 2)}
+                      </div>
+                      {m.upside_to_target != null && (
+                        <div style={{ fontFamily: "monospace", fontSize: 9,
+                          color: m.upside_to_target >= 0 ? "#22c55e" : "#ef4444" }}>
+                          {m.upside_to_target >= 0 ? "+" : ""}{m.upside_to_target.toFixed(1)}% upside
+                        </div>
+                      )}
+                    </div>
+                  ) : <span style={{ color: "#2a2a3e", fontSize: 10 }}>—</span>}
+                </div>
+
+                {/* Actions */}
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}
+                  onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => handleWatch(stock.ticker, stock.name)}
+                    style={{
+                      background: saved.has(stock.ticker) ? "#22c55e22" : "transparent",
+                      border: `1px solid ${saved.has(stock.ticker) ? "#22c55e44" : "#2a2a3e"}`,
+                      color: saved.has(stock.ticker) ? "#22c55e" : "#6666aa",
+                      padding: "3px 8px", borderRadius: 5,
+                      fontSize: 10, fontFamily: "monospace", cursor: "pointer",
+                    }}>
+                    {saved.has(stock.ticker) ? "✓" : "+Watch"}
+                  </button>
+                  <button
+                    onClick={() => router.push(`/?ticker=${stock.ticker}`)}
+                    style={{
+                      background: color + "22", border: `1px solid ${color}44`,
+                      color, padding: "3px 10px", borderRadius: 5,
+                      fontSize: 10, fontFamily: "monospace", cursor: "pointer",
+                    }}>
+                    Analyze →
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+
+          {!loading && sorted.length === 0 && (
+            <div style={{ padding: "2.5rem", textAlign: "center",
               fontFamily: "monospace", fontSize: 12, color: "#33334d" }}>
-              No results for "{search}"
+              {search ? `No results for "${search}"` : "No data loaded"}
             </div>
           )}
         </div>
 
-        <p style={{ fontFamily: "monospace", fontSize: 10, color: "#22223a", marginTop: 12 }}>
-          Analysis reads complete SEC 10-K annual reports, 10-Q quarterly filings, and 8-K current reports.
-          Financial metrics are verified directly from XBRL data — no estimates.
+        <p style={{ fontFamily: "monospace", fontSize: 10, color: "#22223a", marginTop: 10 }}>
+          Prices from Yahoo Finance · Updated hourly · AI scores from last SEC analysis run ·
+          Click any row to run a full AI analysis using verified XBRL financial data
         </p>
       </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 0.8; }
+        }
+      `}</style>
     </main>
   );
 }
@@ -352,8 +401,8 @@ function ScreenerInner() {
 export default function ScreenerPage() {
   return (
     <Suspense fallback={
-      <main style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex",
-        alignItems: "center", justifyContent: "center" }}>
+      <main style={{ minHeight: "100vh", background: "#0a0a0f",
+        display: "flex", alignItems: "center", justifyContent: "center" }}>
         <span style={{ fontFamily: "monospace", color: "#6b7aff" }}>Loading screener…</span>
       </main>
     }>

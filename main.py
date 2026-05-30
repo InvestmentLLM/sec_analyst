@@ -3,12 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sec_fetcher import SECFetcher
 from llm_layer import SECAnalyzer
+from market_data import get_market_data, compute_valuation_verdict
+from app_data import SCREENER_STOCKS
 from dotenv import load_dotenv
 import cache as disk_cache
 
 load_dotenv()
 
-app = FastAPI(title="SEC Analyzer API", version="3.1.0")
+app = FastAPI(title="SEC Analyzer API", version="3.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -136,13 +138,24 @@ def get_comprehensive(ticker: str, refresh: bool = False):
 
         result = {"ticker": t, **analysis}
 
+        # ── Attach live market data + valuation verdict ───────────────
+        try:
+            market = get_market_data(t)
+            if "error" not in market:
+                fcf   = computed.get("free_cash_flow_ttm") or computed.get("free_cash_flow")
+                rev   = computed.get("revenue_ttm")        or computed.get("revenue_latest")
+                sector_name = analysis.get("sector_framework", "General / Diversified")
+                valuation   = compute_valuation_verdict(market, sector_name, fcf, rev)
+                result["market_data"] = market
+                result["valuation"]   = valuation
+        except Exception:
+            pass   # never let market data failure break the main analysis
+
         # Only cache successful analyses — never cache LLM errors, otherwise
         # zeros get served from cache for 24 hours on every subsequent request.
         if "error" not in analysis:
             disk_cache.put(cache_key, {**result, "_ask_cache": ask_cache})
         else:
-            # Propagate the LLM error message to the client so the user
-            # can see exactly what failed (rate limit, JSON parse, etc.)
             result["llm_error"] = analysis.get("error", "Unknown LLM error")
         return result
 
@@ -314,6 +327,57 @@ def compare_ask(req: CompareAskReq):
         raise
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+class MarketBatchReq(BaseModel):
+    tickers: list[str]
+
+
+@app.get("/market/{ticker}")
+def get_market(ticker: str):
+    """Live price, valuation multiples, and analyst data for a single ticker."""
+    t    = ticker.upper()
+    data = get_market_data(t)
+    if "error" in data:
+        raise HTTPException(502, f"Market data unavailable for {t}: {data['error']}")
+    return data
+
+
+@app.post("/market-batch")
+def get_market_batch(req: MarketBatchReq):
+    """Live market data for up to 20 tickers (screener use)."""
+    tickers = [t.strip().upper() for t in req.tickers[:20] if t.strip()]
+    results = {}
+    for t in tickers:
+        try:
+            results[t] = get_market_data(t)
+        except Exception as e:
+            results[t] = {"ticker": t, "error": str(e)}
+    return {"results": results}
+
+
+@app.get("/screener/{sector}")
+def get_screener_data(sector: str):
+    """
+    Returns market data + any cached AI ratings for every stock in the
+    requested sector.  Used by the screener page to show live prices
+    and pre-loaded analysis ratings without running new LLM calls.
+    """
+    stocks = SCREENER_STOCKS.get(sector, [])
+    results = []
+    for s in stocks:
+        t      = s["ticker"]
+        market = get_market_data(t)
+        # Pull cached rating from disk if available (no LLM call)
+        cached_analysis = disk_cache.get(f"{t}_comprehensive", disk_cache.TTL_ANALYSIS)
+        rating = None
+        if cached_analysis:
+            rating = {
+                "score":   cached_analysis.get("rating_score"),
+                "verdict": cached_analysis.get("rating_verdict"),
+            }
+        results.append({**s, "market": market, "rating": rating})
+    return {"sector": sector, "stocks": results}
 
 
 @app.delete("/cache/{ticker}")
