@@ -198,6 +198,17 @@ class SECFetcher:
                     ("us-gaap", "Inventories"),
                     ("ifrs-full", "Inventories"),
                 ],
+                # Used for Altman Z-Score calibration (goodwill intensity check)
+                "goodwill": [
+                    ("us-gaap", "Goodwill"),
+                    ("ifrs-full", "Goodwill"),
+                ],
+                "intangible_assets": [
+                    ("us-gaap", "FiniteLivedIntangibleAssetsNet"),
+                    ("us-gaap", "IntangibleAssetsNetExcludingGoodwill"),
+                    ("us-gaap", "OtherIntangibleAssetsNet"),
+                    ("ifrs-full", "IntangibleAssetsOtherThanGoodwill"),
+                ],
             }
 
             result = {}

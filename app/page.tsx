@@ -521,8 +521,9 @@ function HomeInner() {
   const [messages,   setMessages]   = useState<Msg[]>([]);
   const [question,   setQuestion]   = useState("");
   const [askLoading, setAskLoading] = useState(false);
-  const [watched,        setWatched]        = useState(false);
-  const [watchMsg,       setWatchMsg]       = useState("");
+  const [watched,          setWatched]          = useState(false);
+  const [watchMsg,         setWatchMsg]         = useState("");
+  const [showWatchlistSQL, setShowWatchlistSQL] = useState(false);
   const [insiders,       setInsiders]       = useState<{ transactions: InsiderTx[]; summary: InsiderSummary } | null>(null);
   const [insidersLoading,setInsidersLoading]= useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
@@ -536,26 +537,29 @@ function HomeInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function runAnalysis(overrideTicker?: string) {
+  async function runAnalysis(overrideTicker?: string, forceRefresh = false) {
     const t = (overrideTicker ?? inputVal).trim().toUpperCase();
     if (!t) return;
     setWatched(false); setWatchMsg("");
     setInsiders(null); setInsidersLoading(false);
     setError(""); setAnalysis(null); setMessages([]); setLoading(true); setTicker(t);
 
-    const steps = [
-      "Fetching company info…",
-      "Downloading XBRL financial history…",
-      "Reading 10-K (MD&A, Risk Factors, Financials)…",
-      "Fetching 10-Qs and 8-Ks…",
-      "Running AI analysis and scoring…",
-    ];
+    const steps = forceRefresh
+      ? ["Clearing cache…", "Fetching fresh SEC filings…", "Downloading latest XBRL data…", "Running AI analysis…"]
+      : [
+        "Fetching company info…",
+        "Downloading XBRL financial history…",
+        "Reading 10-K (MD&A, Risk Factors, Financials)…",
+        "Fetching 10-Qs and 8-Ks…",
+        "Running AI analysis and scoring…",
+      ];
     let si = 0;
     setLoadStep(steps[0]);
     const iv = setInterval(() => { si = Math.min(si + 1, steps.length - 1); setLoadStep(steps[si]); }, 5000);
 
     try {
-      const res = await fetch(`${API}/comprehensive/${t}`, { headers: await authHeader() });
+      const url = forceRefresh ? `${API}/comprehensive/${t}?refresh=true` : `${API}/comprehensive/${t}`;
+      const res = await fetch(url, { headers: await authHeader() });
       if (!res.ok) throw new Error((await res.json()).detail || "Analysis failed");
       const data = await res.json();
       setAnalysis(data);
@@ -583,9 +587,17 @@ function HomeInner() {
       setWatched(true);
       setWatchMsg("Added to watchlist");
       setTimeout(() => setWatchMsg(""), 2500);
-    } catch {
-      setWatchMsg("Set up the watchlist table first");
-      setTimeout(() => setWatchMsg(""), 3000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.toLowerCase().includes("relation") || msg.toLowerCase().includes("table") || msg.toLowerCase().includes("exist")) {
+        setShowWatchlistSQL(true);
+      } else if (msg.toLowerCase().includes("auth") || msg.toLowerCase().includes("login")) {
+        setWatchMsg("Sign in to use the watchlist");
+        setTimeout(() => setWatchMsg(""), 3000);
+      } else {
+        setWatchMsg("Watchlist unavailable");
+        setTimeout(() => setWatchMsg(""), 3000);
+      }
     }
   }
 
@@ -651,6 +663,17 @@ function HomeInner() {
                 </span>
               )}
               <button
+                onClick={() => runAnalysis(ticker, true)}
+                disabled={loading}
+                title="Re-fetch live data and re-run AI analysis (bypasses 24h cache)"
+                style={{ background: "transparent",
+                  border: "1px solid #2a2a3e", color: "#6666aa",
+                  padding: "5px 12px", borderRadius: 6, fontSize: 11,
+                  fontFamily: "monospace", cursor: loading ? "not-allowed" : "pointer",
+                  opacity: loading ? 0.5 : 1 }}>
+                ↺ Refresh
+              </button>
+              <button
                 onClick={handleWatchToggle}
                 disabled={watched}
                 style={{ background: watched ? "#22c55e22" : "transparent",
@@ -675,6 +698,47 @@ function HomeInner() {
             padding: "0.75rem 1.25rem", fontSize: 13, color: "#f08080",
             fontFamily: "monospace", borderRadius: 8 }}>
             ⚠ {error}
+          </div>
+        )}
+
+        {/* Watchlist SQL setup banner */}
+        {showWatchlistSQL && (
+          <div style={{ background: "#0f0f1e", border: "1px solid #3a3a6e",
+            borderRadius: 10, padding: "1rem 1.2rem", position: "relative" }}>
+            <button onClick={() => setShowWatchlistSQL(false)}
+              style={{ position: "absolute", top: 10, right: 12, background: "none",
+                border: "none", color: "#6666aa", fontSize: 16, cursor: "pointer" }}>✕</button>
+            <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
+              letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 8 }}>
+              Watchlist Setup Required
+            </div>
+            <p style={{ fontSize: 12, color: "#8888b0", margin: "0 0 10px", fontFamily: "monospace" }}>
+              Run this SQL once in your{" "}
+              <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer"
+                style={{ color: "#6b7aff" }}>Supabase dashboard</a>
+              {" "}→ SQL Editor:
+            </p>
+            <pre style={{
+              background: "#0a0a0f", border: "1px solid #1e1e2e", borderRadius: 6,
+              padding: "10px 14px", fontSize: 11, color: "#c0c0d8", fontFamily: "monospace",
+              overflowX: "auto", margin: 0,
+              userSelect: "all",
+            }}>{`create table if not exists watchlist (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users not null,
+  ticker text not null,
+  company_name text,
+  notes text,
+  added_at timestamptz default now(),
+  unique(user_id, ticker)
+);
+alter table watchlist enable row level security;
+create policy "Users manage own watchlist" on watchlist
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);`}</pre>
+            <p style={{ fontSize: 11, color: "#44445a", margin: "8px 0 0", fontFamily: "monospace" }}>
+              Click inside the code above to select all, copy, paste into Supabase SQL Editor, and run.
+            </p>
           </div>
         )}
 

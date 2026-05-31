@@ -148,6 +148,29 @@ def get_comprehensive(ticker: str, refresh: bool = False):
                 valuation   = compute_valuation_verdict(market, sector_name, fcf, rev)
                 result["market_data"] = market
                 result["valuation"]   = valuation
+
+                # ── Recompute Altman Z with live market cap (much more accurate) ──
+                # The initial computation in analyze_comprehensive uses book equity for X4
+                # because market cap isn't available from XBRL.  Now that we have it,
+                # recompute with the original market-cap formula and update risk_signals.
+                mktcap = market.get("market_cap")
+                if mktcap and result.get("risk_signals") is not None:
+                    altman_mkt = analyzer._compute_altman_z(
+                        facts, mktcap=mktcap, sector_framework=sector_name
+                    )
+                    if altman_mkt:
+                        result["risk_signals"]["altman_z"] = altman_mkt
+                        # Refresh AI interpretation with updated score
+                        try:
+                            beneish = result["risk_signals"].get("beneish_m") or {}
+                            company_name = analysis.get("company_name", t)
+                            result["risk_signals"]["ai_interpretation"] = (
+                                analyzer.analyze_risk_signals(
+                                    altman_mkt, beneish, computed, company_name, t
+                                )
+                            )
+                        except Exception:
+                            pass
         except Exception:
             pass   # never let market data failure break the main analysis
 

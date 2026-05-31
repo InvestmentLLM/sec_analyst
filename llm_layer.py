@@ -785,23 +785,46 @@ class SECAnalyzer:
 
     # ── risk models ──────────────────────────────────────────────────
 
-    def _compute_altman_z(self, facts: dict) -> dict | None:
+    # Sectors where the Altman Z-Score formula doesn't apply
+    _ALTMAN_NA_SECTORS = {
+        "Banking / Financial Services",
+        "Real Estate Investment Trust (REIT)",
+    }
+
+    def _compute_altman_z(self, facts: dict,
+                          mktcap: float | None = None,
+                          sector_framework: str = "General / Diversified") -> dict | None:
         """
-        Altman Z-Score (book-value variant) computed from SEC XBRL data.
-        Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
-        Uses book value of equity for X4 (no market cap available from XBRL).
-        Safe >2.99 | Grey 1.81–2.99 | Distress <1.81
+        Altman Z-Score computed from SEC XBRL data.
+
+        When mktcap is provided (preferred): uses the original Altman (1968) formula
+            X4 = market cap / total liabilities  — far more accurate for large-caps
+        When mktcap is unavailable: falls back to the Z'-Score book-value variant
+            X4 = book equity / total liabilities  — underestimates health for asset-light
+            or acquisition-heavy firms (tech, pharma) where book equity ≠ intrinsic value.
+
+        Returns None for banks and REITs where the model is fundamentally inapplicable.
         """
+        # Model not designed for financial sector companies
+        if sector_framework in self._ALTMAN_NA_SECTORS:
+            return None
+
         def by_yr(key):
             d = facts.get(key)
             return {dp["year"]: dp["value"] for dp in d} if isinstance(d, list) and d else {}
 
-        ca = by_yr("current_assets");   cl = by_yr("current_liabilities")
-        ta = by_yr("total_assets");     re = by_yr("retained_earnings")
-        op = by_yr("operating_income"); eq = by_yr("total_equity")
-        tl = by_yr("total_liabilities");rv = by_yr("revenue")
+        ca = by_yr("current_assets");   cl  = by_yr("current_liabilities")
+        ta = by_yr("total_assets");     re  = by_yr("retained_earnings")
+        op = by_yr("operating_income"); eq  = by_yr("total_equity")
+        tl = by_yr("total_liabilities");rv  = by_yr("revenue")
+        gw = by_yr("goodwill");         ia  = by_yr("intangible_assets")
 
-        common = set(ca) & set(cl) & set(ta) & set(op) & set(eq) & set(tl) & set(rv)
+        common = set(ca) & set(cl) & set(ta) & set(op) & set(tl) & set(rv)
+        if mktcap:
+            # market-cap variant doesn't need book equity
+            common &= set(tl)
+        else:
+            common &= set(eq)
         if not common:
             return None
         yr = max(common)
@@ -810,41 +833,70 @@ class SECAnalyzer:
             ta_v = ta[yr]
             if not ta_v:
                 return None
+
             x1 = (ca[yr] - cl[yr]) / ta_v
-            x2 = re[yr]   / ta_v if yr in re else None
-            x3 = op[yr]   / ta_v
-            x4 = eq[yr]   / tl[yr] if yr in tl and tl[yr] else None
-            x5 = rv[yr]   / ta_v
+            x2 = re[yr] / ta_v if yr in re else None
+            x3 = op[yr] / ta_v
+
+            if mktcap:
+                # Original 1968 formula — uses market cap for X4
+                x4 = mktcap / tl[yr] if tl.get(yr) else None
+                x4_label = "X4_mktcap_to_liabilities"
+                model_variant = "market-value variant (most accurate)"
+            else:
+                # Z' book-value variant — less accurate for tech / acquisition-heavy firms
+                x4 = eq[yr] / tl[yr] if yr in eq and tl.get(yr) else None
+                x4_label = "X4_book_equity_to_liabilities"
+                model_variant = "book-value variant"
 
             if x4 is None:
                 return None
 
+            x5 = rv[yr] / ta_v
+
             if x2 is not None:
                 z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
-                model = "5-factor"
+                model = f"5-factor · {model_variant}"
             else:
                 z = 1.2*x1 + 3.3*x3 + 0.6*x4 + 1.0*x5
-                model = "4-factor (retained earnings unavailable)"
+                model = f"4-factor (no retained earnings) · {model_variant}"
 
             zone = "Safe" if z > 2.99 else "Grey Zone" if z > 1.81 else "Distress"
 
             comp = {
                 "X1_working_capital_ratio": round(x1, 3),
                 "X3_ebit_to_assets":        round(x3, 3),
-                "X4_equity_to_liabilities": round(x4, 3),
+                x4_label:                   round(x4, 3),
                 "X5_asset_turnover":        round(x5, 3),
             }
             if x2 is not None:
                 comp["X2_retained_earnings_ratio"] = round(x2, 3)
 
-            return {
-                "score": round(z, 2),
-                "zone":  zone,
+            # Detect high goodwill / intangible intensity — inflates TA and suppresses ratios
+            caveat = None
+            gw_v = gw.get(yr, 0) or 0
+            ia_v = ia.get(yr, 0) or 0
+            intangibles_total = gw_v + ia_v
+            if intangibles_total and ta_v:
+                intangibles_pct = intangibles_total / ta_v * 100
+                if intangibles_pct > 30:
+                    caveat = (
+                        f"Goodwill + intangibles are {intangibles_pct:.0f}% of total assets "
+                        f"(often from acquisitions). This inflates the asset base and may "
+                        f"suppress X1, X3, X5 ratios — the true Z-Score is likely higher than shown."
+                    )
+
+            result = {
+                "score":      round(z, 2),
+                "zone":       zone,
                 "components": comp,
-                "data_year": yr,
-                "model": model,
+                "data_year":  yr,
+                "model":      model,
                 "thresholds": "Safe >2.99 | Grey 1.81–2.99 | Distress <1.81",
             }
+            if caveat:
+                result["caveat"] = caveat
+            return result
         except Exception:
             return None
 
@@ -1182,7 +1234,9 @@ Return a single JSON object with EXACTLY these keys:
             result["sector_framework"] = sector["name"]
 
             # ── Altman Z-Score + Beneish M-Score (pure math, no LLM for numbers) ──
-            altman  = self._compute_altman_z(facts)
+            # Initial run uses book equity for X4 — main.py will upgrade to market-cap
+            # variant once live market data is fetched (far more accurate for large-caps).
+            altman  = self._compute_altman_z(facts, sector_framework=sector["name"])
             beneish = self._compute_beneish_m(facts)
             if altman or beneish:
                 try:

@@ -3,6 +3,7 @@
 type AltmanZ = {
   score: number; zone: string; components: Record<string, number>;
   data_year: number; model: string; thresholds: string;
+  caveat?: string;
 };
 type BeneishM = {
   score: number; risk_level: string; components: Record<string, number>;
@@ -85,14 +86,24 @@ export default function RiskSignals({ data }: { data: RiskSignalsData }) {
               label={az.zone} sublabel={az.thresholds}
               color={zoneColor(az.zone)}
             />
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+            {az.caveat && (
+              <div style={{
+                marginTop: 10,
+                background: "#1a1200", border: "1px solid #5a4000",
+                borderRadius: 6, padding: "7px 10px",
+                fontFamily: "monospace", fontSize: 9, color: "#c0a000", lineHeight: 1.55,
+              }}>
+                ⚠ {az.caveat}
+              </div>
+            )}
+            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
               {Object.entries(az.components).map(([k, v]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontFamily: "monospace", fontSize: 9, color: "#44445a" }}>
                     {k.replace(/_/g, " ").replace(/x\d /i, "").trim()}
                   </span>
                   <span style={{ fontFamily: "monospace", fontSize: 9, color: "#8888b0" }}>
-                    {v.toFixed(3)}
+                    {(v as number).toFixed(3)}
                   </span>
                 </div>
               ))}
