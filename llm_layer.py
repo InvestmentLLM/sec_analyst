@@ -1208,7 +1208,7 @@ Return a single JSON object with EXACTLY these keys:
     "risk_profile": <integer 0-10>
   }},
   "investment_thesis": "<2-3 sentences: the core reason to own or avoid this stock — state the thesis plainly (e.g. 'X is a dominant franchise with durable pricing power and accelerating FCF — the case for owning it is straightforward' OR 'X is a structurally declining business burning cash — avoid until management demonstrates a credible path to profitability'). Ground every claim in the multi-year data.>",
-  "trend_summary": "<one sentence per year FY{earliest}–FY{latest}: key metric + direction, e.g. 'FY2021: revenue $Xbn, margins expanding; FY2022: ...'>",
+  "trend_summary": "<2-3 sentences of NARRATIVE — tell the story of this company's journey from FY{earliest} to FY{latest}. Identify the 1-2 KEY INFLECTION POINTS and explain WHY they happened (e.g. an acquisition, product cycle, commodity price, regulation, or competitive shift). Do NOT list numbers year-by-year. Write prose like a portfolio manager explaining the chart to a client: 'Revenue grew steadily for 5 years as X tailwind expanded the addressable market, then hit a wall in 2022 when Y changed...' The reader should finish this and understand the shape and cause of the business trajectory.>",
   "summary": "<3 sentences: (1) what this business does, what market it serves, and what drives its revenue; (2) the multi-year financial trajectory in plain English with the most important number — e.g. revenue grew from $X in FY{earliest} to $X in FY{latest} but net margin compressed from X% to X%; (3) the single most important thing an investor deciding whether to buy today must understand>",
   "justification": "<4-5 paragraphs telling the investment story: P1=narrate what drove this business across FY{earliest}–FY{latest} — what tailwinds or headwinds shaped performance, cite revenue and income each year; P2=financial quality — are the margins genuine and expanding or being squeezed, does FCF confirm reported earnings, does the debt load threaten or amplify the thesis; P3=competitive position — why do customers choose this company over alternatives, what is the moat (brand, switching costs, network effects, cost advantage), and what threatens it; P4=the honest bull case vs. the bear case — what specific things must go right for the bull case to play out, and what realistic scenario justifies selling; P5=what concrete triggers — specific metric thresholds, product cycles, macro events — would upgrade or downgrade this rating>",
   "positives": ["<strength with year+figure>", "<strength>", "<strength>"],
@@ -1304,26 +1304,57 @@ Return a single JSON object with EXACTLY these keys:
         except Exception as e:
             return {"error": str(e)}
 
+    _QA_SYSTEM = (
+        "You are a sharp, experienced equity analyst answering a specific investor question. "
+        "Your job is to actually ANSWER the question — not recite data back at them.\n\n"
+
+        "ANSWERING RULES:\n"
+        "1. If asked WHY something happened, give the ROOT CAUSE — not the symptom. "
+        "Use accounting logic to diagnose:\n"
+        "   • Revenue UP but net income DOWN → increased costs. Check: COGS (gross margin), "
+        "SG&A, R&D, or BELOW-THE-LINE items (interest expense, amortization of acquired "
+        "intangibles). If gross/operating margins are fine but net income drops, the culprit "
+        "is almost always interest expense from new debt or amortization from a recent acquisition.\n"
+        "   • Net income much lower than free cash flow → large non-cash charges. "
+        "Common cause: amortization of intangibles from an acquisition. This is normal and "
+        "non-recurring in nature — the business may be healthier than GAAP net income suggests.\n"
+        "   • Revenue jumps >20% in one year → likely a large acquisition closed that year. "
+        "The same event also inflates D&A/amortization and interest expense in subsequent periods.\n"
+        "   • Operating income fine, net income terrible → interest expense (levered buyout?) or tax.\n\n"
+        "2. You MAY use business and financial logic to explain causes even when exact confirmation "
+        "isn't in the data. Say 'the data pattern strongly suggests...' when inferring. "
+        "You must NOT invent specific dollar amounts that aren't in the provided data.\n\n"
+        "3. Be CONCISE: 3-5 sentences for simple questions. Max 2 short paragraphs for complex ones. "
+        "Do not list every metric — only the ones relevant to the question.\n\n"
+        "4. If asked for an opinion (should I buy? is this cheap?), give a direct answer with reasoning. "
+        "Don't hedge into uselessness. Investors want a real take, not 'it depends.'\n\n"
+        "5. If the data genuinely doesn't contain enough information to answer, say so clearly in "
+        "one sentence and explain what data would be needed."
+    )
+
     def query_comprehensive(self, fin_str: str, sections_str: str,
                             computed_str: str, ticker: str, company: str, question: str) -> str:
+        # Inject the accounting-relationships cheat sheet so the model can diagnose root causes
         prompt = (
-            f"You are analyzing {company} ({ticker}).\n\n"
-            f"VERIFIED METRICS:\n{computed_str}\n\n"
-            f"MULTI-YEAR FINANCIAL DATA:\n{fin_str}\n\n"
-            f"FILING CONTENT:\n{sections_str[:12000]}\n\n"
-            f"Question: {question}\n\n"
-            "Answer with specific numbers from the data above. Do not invent any figure."
+            f"COMPANY: {company} ({ticker})\n\n"
+            f"VERIFIED COMPUTED METRICS:\n{computed_str}\n\n"
+            f"MULTI-YEAR FINANCIAL DATA (XBRL — authoritative figures):\n{fin_str}\n\n"
+            f"FILING EXCERPTS (qualitative context):\n{sections_str[:10000]}\n\n"
+            f"INVESTOR QUESTION: {question}\n\n"
+            "Answer the question directly. Diagnose root causes, not symptoms. "
+            "Cite specific years and figures only from the data above."
         )
         try:
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": self._QA_SYSTEM},
                     {"role": "user",   "content": prompt},
                 ],
-                temperature=0.2,
+                temperature=0.3,
+                max_tokens=700,
             )
-            return resp.choices[0].message.content
+            return resp.choices[0].message.content.strip()
         except Exception as e:
             return f"Error: {e}"
 

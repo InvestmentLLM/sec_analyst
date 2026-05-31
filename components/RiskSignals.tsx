@@ -62,11 +62,11 @@ export default function RiskSignals({ data }: { data: RiskSignalsData }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
           letterSpacing: 1.2, textTransform: "uppercase" }}>
-          Risk Signals · Computed from SEC XBRL
+          Financial Health Signals
         </div>
         <div style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 9,
           color: "#33334d", background: "#13131f", padding: "2px 8px", borderRadius: 4 }}>
-          Mathematical models · Zero AI hallucination
+          Pure math from SEC filings · no AI guesswork
         </div>
       </div>
 
@@ -79,7 +79,7 @@ export default function RiskSignals({ data }: { data: RiskSignalsData }) {
             borderRadius: 8, padding: "1rem" }}>
             <div style={{ fontFamily: "monospace", fontSize: 9, color: "#44445a",
               letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
-              Altman Z-Score · Bankruptcy Risk
+              Altman Z-Score · Bankruptcy / Financial Distress Risk
             </div>
             <ScoreMeter
               value={az.score} min={0} max={5} goodHigh={true}
@@ -129,7 +129,7 @@ export default function RiskSignals({ data }: { data: RiskSignalsData }) {
             borderRadius: 8, padding: "1rem" }}>
             <div style={{ fontFamily: "monospace", fontSize: 9, color: "#44445a",
               letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
-              Beneish M-Score · Earnings Manipulation
+              Beneish M-Score · Earnings Manipulation Risk
             </div>
             <ScoreMeter
               value={bm.score} min={-4} max={0} goodHigh={false}

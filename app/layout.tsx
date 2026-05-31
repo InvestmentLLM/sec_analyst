@@ -4,8 +4,8 @@ import "./globals.css";
 import Nav from "../components/Nav";
 
 export const metadata: Metadata = {
-  title: "SEC Lens — AI-Powered SEC Filing Analyzer",
-  description: "Deep AI analysis of SEC 10-K, 10-Q, and 8-K filings. Verified financial metrics from XBRL. No estimates, no guesses.",
+  title: "SEC Lens — AI Stock Analysis",
+  description: "Get a Buy / Sell verdict on any stock in 30 seconds. AI analysis of real SEC filings — financials, red flags, insider activity, and valuation vs. sector peers.",
   icons: { icon: "/favicon.svg" },
 };
 

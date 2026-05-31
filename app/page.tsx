@@ -636,7 +636,7 @@ function HomeInner() {
             value={inputVal}
             onChange={e => setInputVal(e.target.value.toUpperCase())}
             onKeyDown={e => e.key === "Enter" && !loading && runAnalysis()}
-            placeholder="Enter ticker — AAPL, NVDA, TSLA, RRC…"
+            placeholder="Enter any ticker — AAPL, NVDA, TSLA, JPM…"
             style={{ flex: 1, maxWidth: 360, background: "#13131f", border: "1px solid #2a2a3e",
               color: "#e8e8f0", padding: "8px 14px", borderRadius: 7,
               fontSize: 14, fontFamily: "monospace", outline: "none" }}
@@ -758,16 +758,63 @@ create policy "Users manage own watchlist" on watchlist
 
         {/* Empty state */}
         {!loading && !analysis && !error && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
-            flexDirection: "column", gap: 10, minHeight: 300, color: "#2a2a40" }}>
-            <svg width="44" height="44" fill="none" viewBox="0 0 24 24" stroke="#2a2a40" strokeWidth={1}>
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-            </svg>
-            <p style={{ fontFamily: "monospace", fontSize: 13, color: "#33334d" }}>Enter a ticker above and press Analyze</p>
-            <p style={{ fontFamily: "monospace", fontSize: 11, color: "#22223a" }}>
-              Reads complete 10-K, 10-Qs, 8-Ks + XBRL multi-year data
-            </p>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center",
+            gap: 32, padding: "3rem 1rem" }}>
+
+            {/* Hero */}
+            <div style={{ textAlign: "center", maxWidth: 540 }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>📊</div>
+              <h2 style={{ margin: "0 0 10px", fontSize: 22, fontWeight: 700,
+                color: "#e8e8f0", fontFamily: "Georgia, serif" }}>
+                Know if a stock is worth buying — before you buy it
+              </h2>
+              <p style={{ margin: 0, fontSize: 14, color: "#8888b0", lineHeight: 1.7,
+                fontFamily: "Georgia, serif" }}>
+                Full SEC filing analysis + an AI analyst you can interrogate.
+                Get a Buy / Sell verdict, valuation vs. sector peers, insider activity,
+                and answers to any question — all from official filings.
+              </p>
+            </div>
+
+            {/* Quick access tickers */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 10,
+                color: "#33334d", letterSpacing: 1 }}>POPULAR STOCKS</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+                {[
+                  { t: "NVDA", label: "NVDA" }, { t: "AAPL", label: "AAPL" },
+                  { t: "TSLA", label: "TSLA" }, { t: "MSFT", label: "MSFT" },
+                  { t: "META", label: "META" }, { t: "AMZN", label: "AMZN" },
+                  { t: "JPM",  label: "JPM"  }, { t: "AVGO", label: "AVGO" },
+                ].map(({ t, label }) => (
+                  <button key={t} onClick={() => { setInputVal(t); runAnalysis(t); }}
+                    style={{ background: "#0d0d17", border: "1px solid #2a2a3e",
+                      color: "#8888b0", fontFamily: "monospace", fontSize: 12,
+                      padding: "6px 14px", borderRadius: 6, cursor: "pointer",
+                      transition: "all 0.15s" }}
+                    onMouseEnter={e => { (e.target as HTMLButtonElement).style.borderColor = "#6b7aff"; (e.target as HTMLButtonElement).style.color = "#6b7aff"; }}
+                    onMouseLeave={e => { (e.target as HTMLButtonElement).style.borderColor = "#2a2a3e"; (e.target as HTMLButtonElement).style.color = "#8888b0"; }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Feature pills */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center",
+              maxWidth: 560 }}>
+              {[
+                "✓ Buy / Sell verdict with confidence score",
+                "✓ Is the stock cheap or expensive right now?",
+                "✓ Red flags and earnings manipulation check",
+                "✓ Insider buying vs. selling activity",
+                "✓ Ask any question — get a real answer",
+              ].map(f => (
+                <span key={f} style={{ fontFamily: "monospace", fontSize: 11,
+                  color: "#44445a", background: "#0d0d17", border: "1px solid #1e1e2e",
+                  padding: "4px 10px", borderRadius: 4 }}>{f}</span>
+              ))}
+            </div>
           </div>
         )}
 
@@ -862,7 +909,7 @@ create policy "Users manage own watchlist" on watchlist
                 <Card title={`Revenue (bars) & Net Income (dots) · ${rev[0]?.year ?? ""}–${rev[rev.length-1]?.year ?? ""}`}>
                   <RevenueChart rev={rev} income={inc}/>
                 </Card>
-                <Card title="Key Metrics · Verified from SEC XBRL" accent="#22c55e">
+                <Card title="Key Metrics · Verified from SEC Filings" accent="#22c55e">
                   <dl style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {Object.entries(analysis.verified_metrics || {}).map(([label, val]) => (
                       <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
@@ -881,7 +928,7 @@ create policy "Users manage own watchlist" on watchlist
 
               {/* Row 3b: Margin Trends */}
               {(analysis.financial_data?.revenue?.length ?? 0) >= 2 && (
-                <Card title="Margin Trends · Gross / Operating / Net Margin">
+                <Card title="Profitability Trends · Gross / Operating / Net Margin over Time">
                   <MarginsChart data={analysis.financial_data}/>
                 </Card>
               )}
@@ -928,55 +975,105 @@ create policy "Users manage own watchlist" on watchlist
                 ticker={ticker}
               />
 
-              {/* Chat */}
-              <Card title="Ask a Question About This Company">
+              {/* AI Analyst Chat */}
+              <div style={{ background: "#0d0d17", border: "1px solid #6b7aff44",
+                borderRadius: 10, padding: "1rem 1.2rem",
+                boxShadow: "0 0 20px #6b7aff0a" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%",
+                    background: "#22c55e", boxShadow: "0 0 6px #22c55e" }}/>
+                  <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
+                    letterSpacing: 1.2, textTransform: "uppercase" }}>
+                    Ask the AI Analyst
+                  </div>
+                  <span style={{ fontFamily: "monospace", fontSize: 9, color: "#33334d",
+                    marginLeft: "auto" }}>
+                    Grounded in {analysis.company_name}&apos;s actual SEC filings
+                  </span>
+                </div>
+
+                {/* Suggested questions — shown until user starts chatting */}
+                {messages.length === 0 && !askLoading && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+                    {[
+                      "What caused the biggest drop in net income?",
+                      "Is this stock cheap or expensive right now?",
+                      "What are the biggest risks to this business?",
+                      "Is the company generating real cash or just accounting profits?",
+                      "Would you buy this stock today? Why or why not?",
+                      "What do insiders know that we don't?",
+                    ].map(q => (
+                      <button key={q}
+                        onClick={() => { setQuestion(q); }}
+                        style={{ background: "#13131f", border: "1px solid #2a2a3e",
+                          color: "#8888b0", fontFamily: "monospace", fontSize: 10,
+                          padding: "5px 11px", borderRadius: 6, cursor: "pointer",
+                          transition: "all 0.15s", textAlign: "left" }}
+                        onMouseEnter={e => { const b = e.currentTarget; b.style.borderColor = "#6b7aff44"; b.style.color = "#c0c0d8"; }}
+                        onMouseLeave={e => { const b = e.currentTarget; b.style.borderColor = "#2a2a3e"; b.style.color = "#8888b0"; }}>
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {messages.length > 0 && (
-                  <div style={{ maxHeight: 320, overflowY: "auto", marginBottom: 12,
+                  <div style={{ maxHeight: 380, overflowY: "auto", marginBottom: 12,
                     display: "flex", flexDirection: "column", gap: 10 }}>
                     {messages.map((m, i) => (
                       <div key={i} style={{
                         alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                        maxWidth: "85%",
-                        background: m.role === "user" ? "#1e1e40" : "#14142a",
+                        maxWidth: "88%",
+                        background: m.role === "user" ? "#1e1e40" : "#0f0f20",
                         border: `1px solid ${m.role === "user" ? "#3a3a60" : "#1e1e2e"}`,
-                        borderRadius: 10, padding: "0.65rem 1rem",
-                        fontSize: 13, lineHeight: 1.65, color: "#c0c0d8", whiteSpace: "pre-wrap" }}>
+                        borderRadius: 10, padding: "0.7rem 1rem",
+                        fontSize: 13, lineHeight: 1.75, color: "#c0c0d8",
+                        whiteSpace: "pre-wrap", fontFamily: m.role === "user" ? "monospace" : "Georgia, serif" }}>
                         {m.text}
                       </div>
                     ))}
                     {askLoading && (
-                      <div style={{ alignSelf: "flex-start", background: "#14142a",
-                        border: "1px solid #1e1e2e", borderRadius: 10, padding: "0.65rem 1rem",
-                        fontSize: 13, color: "#6b7aff", fontFamily: "monospace" }}>thinking…</div>
+                      <div style={{ alignSelf: "flex-start", background: "#0f0f20",
+                        border: "1px solid #1e1e2e", borderRadius: 10, padding: "0.7rem 1rem",
+                        fontSize: 13, color: "#6b7aff", fontFamily: "monospace",
+                        display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ display: "inline-block", width: 8, height: 8,
+                          borderRadius: "50%", background: "#6b7aff",
+                          animation: "pulse 1s ease-in-out infinite" }}/>
+                        Analyzing…
+                      </div>
                     )}
                     <div ref={chatEnd}/>
                   </div>
                 )}
+
                 <div style={{ display: "flex", gap: 10 }}>
                   <input
                     value={question}
                     onChange={e => setQuestion(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && !askLoading && sendQuestion()}
-                    placeholder={`Ask about ${ticker || "the company"}…`}
+                    placeholder="What do you want to know about this company?"
                     disabled={askLoading}
-                    style={{ flex: 1, minWidth: 0, background: "#13131f", border: "1px solid #2a2a3e",
-                      color: "#e8e8f0", padding: "9px 12px", borderRadius: 8,
+                    style={{ flex: 1, minWidth: 0, background: "#13131f",
+                      border: "1px solid #2a2a3e",
+                      color: "#e8e8f0", padding: "10px 14px", borderRadius: 8,
                       fontSize: 14, outline: "none", fontFamily: "Georgia, serif" }}/>
                   <button
                     onClick={sendQuestion}
                     disabled={askLoading || !question.trim()}
-                    style={{ flexShrink: 0, background: "#6b7aff", border: "none", color: "#fff",
-                      padding: "9px 20px", borderRadius: 8, fontSize: 14,
+                    style={{ flexShrink: 0, background: "#6b7aff", border: "none",
+                      color: "#fff", padding: "10px 22px", borderRadius: 8, fontSize: 14,
+                      fontWeight: "bold",
                       cursor: askLoading || !question.trim() ? "not-allowed" : "pointer",
                       opacity: askLoading || !question.trim() ? 0.5 : 1 }}>
                     Ask
                   </button>
                 </div>
-              </Card>
+              </div>
 
               {/* Filings analyzed — clickable cards */}
               {analysis.filings_analyzed?.length > 0 && (
-                <Card title="Filings Analyzed · Click Any Filing for a Deep-Dive Summary">
+                <Card title="Source Documents · Click Any Filing for a Deep-Dive Summary">
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                     {analysis.filings_analyzed.map((f, i) => {
                       const params = new URLSearchParams({
