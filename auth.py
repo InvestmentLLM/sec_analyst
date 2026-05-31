@@ -1,38 +1,51 @@
 """
-Supabase auth integration for SEC Analyzer.
+auth.py — Supabase auth + usage-limit enforcement for the SEC Analyst API.
 
-Setup:
-1. In Supabase dashboard → Authentication → Providers → enable Google/GitHub
-2. Copy SUPABASE_URL and SUPABASE_ANON_KEY from Settings → API
-3. Add them to .env:
-   SUPABASE_URL=https://xxxxx.supabase.co
-   SUPABASE_ANON_KEY=eyJ...
+The module is safe to import even when Supabase env vars are missing (it just
+sets _available = False and all functions become no-ops).
+
+Backend Supabase writes use the SERVICE ROLE key when available so they bypass
+Row Level Security.  The anon key is used as a fallback for local dev where
+RLS policies are usually disabled.
 """
 
 import os
-from datetime import datetime
+from datetime import date, datetime
 from fastapi import HTTPException, Header
-from supabase import create_client, Client
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+_SUPABASE_URL    = os.getenv("NEXT_PUBLIC_SUPABASE_URL") or os.getenv("SUPABASE_URL", "")
+_ANON_KEY        = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
+_SERVICE_KEY     = os.getenv("SUPABASE_SERVICE_KEY", "")   # set on Railway/Render for writes
+_WRITE_KEY       = _SERVICE_KEY or _ANON_KEY              # service key preferred for mutations
 
-if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-    raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env")
+_available = bool(_SUPABASE_URL and _ANON_KEY)
+supabase = None
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+if _available:
+    try:
+        from supabase import create_client
+        supabase = create_client(_SUPABASE_URL, _WRITE_KEY)
+    except Exception:
+        _available = False
+
+FREE_LIMIT = 3   # analyses per calendar month for free users
 
 
-def get_current_user(authorization: str = Header(None)):
+# ── Token verification ───────────────────────────────────────────────────────
+
+def get_current_user(authorization: str | None) -> dict | None:
     """
-    Extract user from JWT in Authorization header.
-    Header format: "Bearer <token>"
+    Verify a Supabase JWT from the Authorization header.
+    Returns {"id": uuid, "email": str} or raises HTTPException(401).
+    Returns None if no token was supplied (anonymous access).
     """
     if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
+        return None
+    if not _available or supabase is None:
+        return None   # auth system not configured — treat as anonymous
 
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -40,63 +53,138 @@ def get_current_user(authorization: str = Header(None)):
 
     token = parts[1]
     try:
-        # Let Supabase verify the token server-side — no JWT secret needed
-        response = supabase.auth.get_user(token)
-        user = response.user
+        # Supabase verifies the JWT server-side
+        resp = supabase.auth.get_user(token)
+        user = resp.user
         if not user:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user.id, "email": user.email}
+        return {"id": str(user.id), "email": user.email or ""}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Auth failed: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Auth failed: {e}")
 
 
-def create_user_record(user_id: str, email: str) -> None:
-    """
-    Called after signup: creates a row in the `users` table.
-    This table tracks billing status, usage, etc.
-    """
+# ── User record management ───────────────────────────────────────────────────
+
+def _first_of_month() -> str:
+    today = date.today()
+    return date(today.year, today.month, 1).isoformat()
+
+
+def ensure_user_record(user_id: str, email: str) -> None:
+    """Upsert a row in public.users — safe to call on every request."""
+    if not _available or supabase is None:
+        return
     try:
-        supabase.table("users").insert({
-            "id": user_id,
-            "email": email,
-            "is_paid": False,
-            "analyses_used": 0,
-            "created_at": datetime.utcnow().isoformat(),
-        }).execute()
-    except Exception as e:
-        # User might already exist; that's ok
+        supabase.table("users").upsert(
+            {
+                "id": user_id,
+                "email": email,
+                "is_paid": False,
+                "analyses_used": 0,
+                "analyses_reset_at": _first_of_month(),
+            },
+            on_conflict="id",
+            ignore_duplicates=True,   # don't overwrite existing rows
+        ).execute()
+    except Exception:
         pass
 
 
 def get_user_data(user_id: str) -> dict:
-    """Fetch user record from Supabase (billing status, usage count)."""
+    """Fetch the public.users row for this user."""
+    if not _available or supabase is None:
+        return {}
     try:
-        result = supabase.table("users").select("*").eq("id", user_id).single().execute()
-        return result.data if result.data else {}
+        result = supabase.table("users").select("*").eq("id", user_id).maybe_single().execute()
+        return result.data or {}
     except Exception:
         return {}
 
 
-def increment_usage(user_id: str) -> int:
-    """Increment analyses_used by 1, return new count."""
+def check_and_increment(user_id: str) -> dict:
+    """
+    Check usage limit, increment if allowed.
+    Returns {"allowed": bool, "used": int, "limit": int|None, "plan": str}.
+    Called ONCE per fresh analysis (cache hits skip this).
+    """
+    if not _available or supabase is None:
+        return {"allowed": True, "used": 0, "limit": None, "plan": "free"}
+
+    user = get_user_data(user_id)
+
+    # Paid users: always allowed
+    if user.get("is_paid"):
+        try:
+            supabase.table("users").update({
+                "analyses_used": (user.get("analyses_used") or 0) + 1
+            }).eq("id", user_id).execute()
+        except Exception:
+            pass
+        return {"allowed": True, "used": user.get("analyses_used", 0), "limit": None, "plan": "pro"}
+
+    # Free users: check monthly quota
+    reset_at = user.get("analyses_reset_at", "")
+    used     = user.get("analyses_used", 0) or 0
+    fom      = _first_of_month()
+
+    # Reset counter at the start of a new calendar month
+    if reset_at < fom:
+        used = 0
+        try:
+            supabase.table("users").update({
+                "analyses_used": 0,
+                "analyses_reset_at": fom,
+            }).eq("id", user_id).execute()
+        except Exception:
+            pass
+
+    if used >= FREE_LIMIT:
+        return {"allowed": False, "used": used, "limit": FREE_LIMIT, "plan": "free"}
+
+    # Increment
     try:
-        user = get_user_data(user_id)
-        new_count = (user.get("analyses_used", 0) or 0) + 1
-        supabase.table("users").update({"analyses_used": new_count}).eq("id", user_id).execute()
-        return new_count
+        supabase.table("users").update({
+            "analyses_used": used + 1,
+            "analyses_reset_at": fom,
+        }).eq("id", user_id).execute()
     except Exception:
-        return 0
+        pass
+
+    return {"allowed": True, "used": used + 1, "limit": FREE_LIMIT, "plan": "free"}
 
 
-def check_rate_limit(user_id: str) -> bool:
-    """Return True if user can make an analysis (not over limit)."""
+def get_usage(user_id: str) -> dict:
+    """Return current plan + usage for the /usage endpoint."""
+    if not _available or supabase is None:
+        return {"plan": "free", "analyses_used": 0, "analyses_limit": FREE_LIMIT}
+
     user = get_user_data(user_id)
     is_paid = user.get("is_paid", False)
+    used = user.get("analyses_used", 0) or 0
 
-    # Paid users: unlimited
-    if is_paid:
+    # Auto-reset at month boundary (read-only check)
+    reset_at = user.get("analyses_reset_at", "")
+    if reset_at < _first_of_month():
+        used = 0
+
+    return {
+        "plan":           "pro" if is_paid else "free",
+        "analyses_used":  used,
+        "analyses_limit": None if is_paid else FREE_LIMIT,
+    }
+
+
+def mark_paid(email: str, stripe_customer_id: str = "") -> bool:
+    """Called from Stripe webhook — marks user as paid by email."""
+    if not _available or supabase is None:
+        return False
+    try:
+        update: dict = {"is_paid": True}
+        if stripe_customer_id:
+            update["stripe_customer_id"] = stripe_customer_id
+        supabase.table("users").update(update).eq("email", email).execute()
         return True
-
-    # Free users: 3 per month
-    analyses_used = user.get("analyses_used", 0) or 0
-    return analyses_used < 3
+    except Exception:
+        return False

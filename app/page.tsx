@@ -518,6 +518,7 @@ function HomeInner() {
   const [loading,    setLoading]    = useState(false);
   const [loadStep,   setLoadStep]   = useState("");
   const [error,      setError]      = useState("");
+  const [upgradeUrl, setUpgradeUrl] = useState("");
   const [messages,   setMessages]   = useState<Msg[]>([]);
   const [question,   setQuestion]   = useState("");
   const [askLoading, setAskLoading] = useState(false);
@@ -542,7 +543,7 @@ function HomeInner() {
     if (!t) return;
     setWatched(false); setWatchMsg("");
     setInsiders(null); setInsidersLoading(false);
-    setError(""); setAnalysis(null); setMessages([]); setLoading(true); setTicker(t);
+    setError(""); setUpgradeUrl(""); setAnalysis(null); setMessages([]); setLoading(true); setTicker(t);
 
     const steps = forceRefresh
       ? ["Clearing cache…", "Fetching fresh SEC filings…", "Downloading latest XBRL data…", "Running AI analysis…"]
@@ -560,7 +561,18 @@ function HomeInner() {
     try {
       const url = forceRefresh ? `${API}/comprehensive/${t}?refresh=true` : `${API}/comprehensive/${t}`;
       const res = await fetch(url, { headers: await authHeader() });
-      if (!res.ok) throw new Error((await res.json()).detail || "Analysis failed");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          const detail = body.detail || {};
+          setUpgradeUrl(detail.upgrade_url || "");
+          throw new Error("__rate_limit__");
+        }
+        if (res.status === 0 || res.status === 502 || res.status === 503) {
+          throw new Error("__backend_down__");
+        }
+        throw new Error(body.detail || "Analysis failed");
+      }
       const data = await res.json();
       setAnalysis(data);
       isInWatchlist(t).then(setWatched);
@@ -692,8 +704,65 @@ function HomeInner() {
       <div style={{ padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1.2rem",
         maxWidth: 1200, margin: "0 auto" }}>
 
-        {/* Error */}
-        {error && (
+        {/* Upgrade wall — shown when free limit is hit */}
+        {error === "__rate_limit__" && (
+          <div style={{ background: "#0a0a0f", border: "1px solid #6b7aff44",
+            borderRadius: 14, padding: "2.5rem", textAlign: "center",
+            boxShadow: "0 0 60px #6b7aff0d" }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🔒</div>
+            <h2 style={{ fontFamily: "Georgia, serif", fontSize: 20, color: "#e8e8f0",
+              margin: "0 0 10px" }}>You&apos;ve used your 3 free analyses this month</h2>
+            <p style={{ fontFamily: "monospace", fontSize: 13, color: "#8888b0",
+              margin: "0 0 24px", lineHeight: 1.7 }}>
+              Upgrade to Pro for unlimited analyses, the full AI analyst chat,
+              watchlist tracking, and insider activity — all for $29/month.
+            </p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+              {upgradeUrl && (
+                <a href={upgradeUrl} target="_blank" rel="noreferrer"
+                  style={{ background: "#6b7aff", color: "#fff",
+                    padding: "12px 32px", borderRadius: 8, fontSize: 14,
+                    fontWeight: "bold", textDecoration: "none", display: "inline-block" }}>
+                  Upgrade to Pro — $29/month →
+                </a>
+              )}
+              {!upgradeUrl && (
+                <a href="/landing#pricing"
+                  style={{ background: "#6b7aff", color: "#fff",
+                    padding: "12px 32px", borderRadius: 8, fontSize: 14,
+                    fontWeight: "bold", textDecoration: "none", display: "inline-block" }}>
+                  See Pro plans →
+                </a>
+              )}
+            </div>
+            <p style={{ fontFamily: "monospace", fontSize: 11, color: "#2a2a40",
+              marginTop: 14 }}>
+              Resets automatically on the 1st of next month
+            </p>
+          </div>
+        )}
+
+        {/* Backend down — show setup instructions */}
+        {error === "__backend_down__" && (
+          <div style={{ background: "#1a1200", border: "1px solid #5a4000",
+            borderRadius: 10, padding: "1.2rem 1.4rem" }}>
+            <p style={{ fontFamily: "monospace", fontSize: 13, color: "#f0c040",
+              margin: "0 0 6px", fontWeight: "bold" }}>
+              ⚠ Cannot reach the analysis server
+            </p>
+            <p style={{ fontFamily: "monospace", fontSize: 12, color: "#997700", margin: 0, lineHeight: 1.6 }}>
+              The backend API is not running or the URL is not configured.
+              If you&apos;re the developer: deploy to Railway/Render and set
+              <code style={{ background: "#13130a", padding: "1px 5px", borderRadius: 3, margin: "0 4px" }}>
+                NEXT_PUBLIC_API_URL
+              </code>
+              in Vercel to your backend URL.
+            </p>
+          </div>
+        )}
+
+        {/* Generic error */}
+        {error && error !== "__rate_limit__" && error !== "__backend_down__" && (
           <div style={{ background: "#2e1015", border: "1px solid #5a2020",
             padding: "0.75rem 1.25rem", fontSize: 13, color: "#f08080",
             fontFamily: "monospace", borderRadius: 8 }}>

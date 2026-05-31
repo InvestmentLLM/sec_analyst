@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sec_fetcher import SECFetcher
@@ -7,8 +7,13 @@ from market_data import get_market_data, compute_valuation_verdict
 from app_data import SCREENER_STOCKS
 from dotenv import load_dotenv
 import cache as disk_cache
+import auth
+import os
 
 load_dotenv()
+
+_STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+_STRIPE_PAYMENT_LINK    = os.getenv("STRIPE_PAYMENT_LINK", "")
 
 app = FastAPI(title="SEC Analyzer API", version="3.2.0")
 app.add_middleware(
@@ -80,7 +85,8 @@ def get_filings(ticker: str, count: int = 5):
 
 
 @app.get("/comprehensive/{ticker}")
-def get_comprehensive(ticker: str, refresh: bool = False):
+def get_comprehensive(ticker: str, refresh: bool = False,
+                      authorization: str = Header(None)):
     """
     Fetch all key SEC filings + XBRL data, pre-compute exact metrics,
     then run LLM analysis with a 0-100 buy/sell rating.
@@ -88,13 +94,23 @@ def get_comprehensive(ticker: str, refresh: bool = False):
     Pass ?refresh=true to bypass cache and re-fetch live data.
     Results are cached to disk for 24 hours.
 
-    Requires: Bearer token in Authorization header.
-    Rate limited: 3 analyses/month for free users, unlimited for paid.
+    Auth: Bearer token in Authorization header (Supabase JWT).
+    Rate limit: 3 fresh analyses/month for free users, unlimited for Pro.
+    Cache hits never count against usage.
     """
     t = ticker.upper()
     cache_key = f"{t}_comprehensive"
 
-    # Check rate limit (unless cache hit)
+    # ── Authenticate (non-fatal — anonymous access allowed) ──────────────
+    user = None
+    try:
+        user = auth.get_current_user(authorization)
+        if user:
+            auth.ensure_user_record(user["id"], user.get("email", ""))
+    except HTTPException:
+        pass   # invalid token → treat as anonymous
+
+    # ── Cache check — hits are always free ───────────────────────────────
     if not refresh:
         cached = disk_cache.get(cache_key, disk_cache.TTL_ANALYSIS)
         if cached is not None:
@@ -102,6 +118,21 @@ def get_comprehensive(ticker: str, refresh: bool = False):
             _comprehensive_cache[t] = cached.get("_ask_cache", {})
             cached.pop("_ask_cache", None)
             return cached
+
+    # ── Rate limit check (only for fresh / refresh requests) ─────────────
+    if user:
+        result = auth.check_and_increment(user["id"])
+        if not result["allowed"]:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error":        "rate_limit",
+                    "message":      f"You've used all {result['limit']} free analyses this month.",
+                    "used":         result["used"],
+                    "limit":        result["limit"],
+                    "upgrade_url":  _STRIPE_PAYMENT_LINK,
+                }
+            )
 
     try:
         fetcher  = SECFetcher(t)
@@ -435,3 +466,68 @@ def query(req: QueryReq):
         return {"ticker": req.ticker.upper(), "question": req.question, "answer": answer}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ── Usage / plan ─────────────────────────────────────────────────────────────
+
+@app.get("/usage")
+def get_usage(authorization: str = Header(None)):
+    """Return the authenticated user's plan and analysis usage for this month."""
+    user = None
+    try:
+        user = auth.get_current_user(authorization)
+    except HTTPException:
+        pass
+    if not user:
+        return {"plan": "free", "analyses_used": 0, "analyses_limit": auth.FREE_LIMIT}
+    try:
+        return auth.get_usage(user["id"])
+    except Exception:
+        return {"plan": "free", "analyses_used": 0, "analyses_limit": auth.FREE_LIMIT}
+
+
+# ── Stripe webhook ───────────────────────────────────────────────────────────
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str = Header(None, alias="stripe-signature")):
+    """
+    Receives Stripe events.  On checkout.session.completed, marks the user's
+    Supabase record as is_paid=True so they get unlimited analyses.
+
+    Configure in Stripe Dashboard → Webhooks → Add endpoint:
+      URL: https://your-backend.railway.app/stripe/webhook
+      Events: checkout.session.completed, customer.subscription.deleted
+    """
+    if not _STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(500, "STRIPE_WEBHOOK_SECRET not configured on server")
+
+    payload = await request.body()
+    try:
+        import stripe as _stripe
+        event = _stripe.Webhook.construct_event(
+            payload, stripe_signature, _STRIPE_WEBHOOK_SECRET
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Stripe signature invalid: {e}")
+
+    evt_type = event["type"]
+    obj      = event["data"]["object"]
+
+    if evt_type == "checkout.session.completed":
+        email      = (obj.get("customer_email")
+                      or obj.get("customer_details", {}).get("email", ""))
+        cust_id    = obj.get("customer", "")
+        if email:
+            auth.mark_paid(email, stripe_customer_id=cust_id)
+
+    elif evt_type in ("customer.subscription.deleted", "customer.subscription.paused"):
+        # Downgrade back to free when subscription is cancelled
+        cust_id = obj.get("customer", "")
+        if cust_id and auth._available and auth.supabase:
+            try:
+                auth.supabase.table("users").update({"is_paid": False}) \
+                    .eq("stripe_customer_id", cust_id).execute()
+            except Exception:
+                pass
+
+    return {"received": True}

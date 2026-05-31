@@ -1,5 +1,7 @@
 "use client";
 
+const STRIPE_LINK = process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK ?? "/login";
+
 const C = {
   bg:      "#08080e",
   surface: "#0d0d17",
@@ -351,11 +353,11 @@ function Pricing() {
                 </div>
               ))}
             </div>
-            <a href="/login" style={{ display: "block", textAlign: "center",
+            <a href={STRIPE_LINK} style={{ display: "block", textAlign: "center",
               background: C.accent, color: "#fff",
               padding: "11px", borderRadius: 8, fontSize: 13,
               fontFamily: "monospace", textDecoration: "none", fontWeight: "bold" }}>
-              Start free trial →
+              Upgrade to Pro →
             </a>
           </div>
         </div>

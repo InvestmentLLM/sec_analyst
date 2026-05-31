@@ -31,16 +31,32 @@ function Card({ title, accent, children }: { title: string; accent?: string; chi
   );
 }
 
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+type UsageData = { plan: string; analyses_used: number; analyses_limit: number | null };
+
 export default function DashboardPage() {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [email,     setEmail]     = useState("");
   const [dbError,   setDbError]   = useState(false);
+  const [usage,     setUsage]     = useState<UsageData | null>(null);
 
   useEffect(() => {
     async function load() {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user }, } = await supabase.auth.getUser();
       setEmail(user?.email ?? "");
+
+      // Load usage from backend
+      try {
+        const session = await supabase.auth.getSession();
+        const token   = session.data.session?.access_token;
+        const res = await fetch(`${API}/usage`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (res.ok) setUsage(await res.json());
+      } catch { /* ignore */ }
+
       try {
         const items = await getWatchlist();
         setWatchlist(items);
@@ -62,11 +78,60 @@ export default function DashboardPage() {
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
 
         {/* Header */}
-        <div style={{ marginBottom: "1.8rem" }}>
-          <h1 style={{ fontSize: 20, color: "#e8e8f0", marginBottom: 4, fontFamily: "Georgia, serif" }}>
-            Dashboard
-          </h1>
-          <p style={{ fontFamily: "monospace", fontSize: 11, color: "#44445a" }}>{email}</p>
+        <div style={{ marginBottom: "1.8rem", display: "flex", alignItems: "flex-start",
+          justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h1 style={{ fontSize: 20, color: "#e8e8f0", marginBottom: 4,
+              fontFamily: "Georgia, serif" }}>Dashboard</h1>
+            <p style={{ fontFamily: "monospace", fontSize: 11, color: "#44445a", margin: 0 }}>{email}</p>
+          </div>
+
+          {/* Plan + usage pill */}
+          {usage && (
+            <div style={{ background: "#0d0d17", border: "1px solid #1e1e2e",
+              borderRadius: 10, padding: "12px 18px", minWidth: 220 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{
+                  fontFamily: "monospace", fontSize: 10,
+                  background: usage.plan === "pro" ? "#6b7aff22" : "#1a1a2e",
+                  border: `1px solid ${usage.plan === "pro" ? "#6b7aff" : "#2a2a3e"}`,
+                  color: usage.plan === "pro" ? "#6b7aff" : "#6666aa",
+                  padding: "2px 10px", borderRadius: 10, fontWeight: "bold",
+                  textTransform: "uppercase", letterSpacing: 1,
+                }}>
+                  {usage.plan === "pro" ? "✓ Pro" : "Free"}
+                </span>
+                {usage.plan === "free" && (
+                  <a href={process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK ?? "/landing#pricing"}
+                    style={{ fontFamily: "monospace", fontSize: 10, color: "#6b7aff",
+                      textDecoration: "none" }}>
+                    Upgrade →
+                  </a>
+                )}
+              </div>
+              {usage.plan === "free" && usage.analyses_limit != null && (
+                <>
+                  <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6666aa",
+                    marginBottom: 5 }}>
+                    Analyses this month: {usage.analyses_used} / {usage.analyses_limit}
+                  </div>
+                  <div style={{ background: "#1a1a2e", borderRadius: 4, height: 5, overflow: "hidden" }}>
+                    <div style={{
+                      width: `${Math.min(100, (usage.analyses_used / usage.analyses_limit) * 100)}%`,
+                      height: "100%", borderRadius: 4,
+                      background: usage.analyses_used >= usage.analyses_limit ? "#ef4444" : "#6b7aff",
+                      transition: "width 0.4s ease",
+                    }}/>
+                  </div>
+                </>
+              )}
+              {usage.plan === "pro" && (
+                <div style={{ fontFamily: "monospace", fontSize: 10, color: "#6666aa" }}>
+                  Unlimited analyses
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: "1.5rem" }}>
